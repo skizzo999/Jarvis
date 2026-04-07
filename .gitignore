@@ -1,0 +1,32 @@
+# Python
+api/venv/
+api/__pycache__/
+api/routers/__pycache__/
+api/db/__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Node
+dashboard/node_modules/
+dashboard/dist/
+
+# Secrets
+api/.env
+.env
+
+# Database (dati live, non in repo)
+data/*.db
+
+# Logs
+logs/
+*.log
+
+# Storage files
+storage/
+
+# macOS
+.DS_Store
+
+# Whisper model cache
+.cache/
