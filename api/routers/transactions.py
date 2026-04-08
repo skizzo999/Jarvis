@@ -12,21 +12,25 @@ class Transaction(BaseModel):
     direction: str
     category: Optional[str] = None
     note: Optional[str] = None
+    account: Optional[str] = "cash"
 
 @router.post("/transactions")
 def add_transaction(t: Transaction):
     conn = get_db()
     now = datetime.now().isoformat()
     conn.execute(
-        "INSERT INTO transactions (created_at, amount, direction, category, note) VALUES (?,?,?,?,?)",
-        (now, t.amount, t.direction, t.category, t.note)
+        "INSERT INTO transactions (created_at, amount, direction, category, note, account) VALUES (?,?,?,?,?,?)",
+        (now, t.amount, t.direction, t.category, t.note, t.account or "cash")
     )
     conn.commit()
-    saldo = conn.execute(
-        "SELECT SUM(CASE WHEN direction='+' THEN amount ELSE -amount END) FROM transactions"
-    ).fetchone()[0] or 0
+    saldo_cash = conn.execute(
+        "SELECT COALESCE(SUM(CASE WHEN direction='+' THEN amount ELSE -amount END),0) FROM transactions WHERE account='cash'"
+    ).fetchone()[0]
+    saldo_revolut = conn.execute(
+        "SELECT COALESCE(SUM(CASE WHEN direction='+' THEN amount ELSE -amount END),0) FROM transactions WHERE account='revolut'"
+    ).fetchone()[0]
     conn.close()
-    return {"status": "ok", "saldo": round(saldo, 2)}
+    return {"status": "ok", "saldo_cash": round(saldo_cash, 2), "saldo_revolut": round(saldo_revolut, 2)}
 
 @router.get("/transactions/report")
 def report(period: str = "today"):
@@ -40,19 +44,31 @@ def report(period: str = "today"):
         from_date = now.strftime("%Y-%m-01")
     else:
         from_date = now.strftime("%Y-%m-%d")
+
     rows = conn.execute(
         "SELECT * FROM transactions WHERE created_at >= ? ORDER BY created_at DESC",
         (from_date,)
     ).fetchall()
+
     entrate = sum(r["amount"] for r in rows if r["direction"] == "+")
-    uscite = sum(r["amount"] for r in rows if r["direction"] == "-")
+    uscite  = sum(r["amount"] for r in rows if r["direction"] == "-")
+
+    saldo_cash = conn.execute(
+        "SELECT COALESCE(SUM(CASE WHEN direction='+' THEN amount ELSE -amount END),0) FROM transactions WHERE account='cash'"
+    ).fetchone()[0]
+    saldo_revolut = conn.execute(
+        "SELECT COALESCE(SUM(CASE WHEN direction='+' THEN amount ELSE -amount END),0) FROM transactions WHERE account='revolut'"
+    ).fetchone()[0]
+
     conn.close()
     return {
-        "period": period,
-        "entrate": round(entrate, 2),
-        "uscite": round(uscite, 2),
-        "saldo": round(entrate - uscite, 2),
-        "transazioni": len(rows)
+        "period":        period,
+        "entrate":       round(entrate, 2),
+        "uscite":        round(uscite, 2),
+        "saldo":         round(saldo_cash + saldo_revolut, 2),
+        "saldo_cash":    round(saldo_cash, 2),
+        "saldo_revolut": round(saldo_revolut, 2),
+        "transazioni":   len(rows),
     }
 
 @router.get("/transactions")

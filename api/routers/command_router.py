@@ -1,310 +1,467 @@
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel
-from datetime import datetime
-import sqlite3, os, json, anthropic
+from datetime import datetime, timedelta
+import sqlite3, os, json, re, requests, anthropic
+from requests.auth import HTTPBasicAuth
+from dotenv import load_dotenv
+
+load_dotenv(dotenv_path="/home/jarvis/api/.env")
 
 router = APIRouter(tags=["command"])
 
-DB_PATH = "/home/jarvis/data/jarvis.db"
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+DB_PATH        = "/home/jarvis/data/jarvis.db"
+RADICALE_URL   = "http://localhost:5232/matteo/calendar/"
+RADICALE_AUTH  = HTTPBasicAuth("matteo", "Mlizzo06")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+ANTHROPIC_KEY  = os.getenv("ANTHROPIC_API_KEY", "")
+MODEL          = "claude-haiku-4-5-20251001"
 
-# ── helpers DB ──────────────────────────────────────────────────────────────
+# ── DB ────────────────────────────────────────────────────────────────────────
 
 def get_db():
     return sqlite3.connect(DB_PATH)
 
 def ensure_tables(cur):
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS conversation_history (
-            id        INTEGER PRIMARY KEY AUTOINCREMENT,
-            role      TEXT NOT NULL,
-            content   TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS workout_logs (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            exercise   TEXT NOT NULL,
-            weight_kg  REAL NOT NULL,
-            reps       INTEGER,
-            sets       INTEGER,
-            notes      TEXT,
-            logged_at  TEXT NOT NULL DEFAULT (datetime('now'))
-        )
-    """)
+    cur.execute("""CREATE TABLE IF NOT EXISTS conversation_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        role TEXT NOT NULL, content TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now')))""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS workout_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        exercise TEXT NOT NULL, weight_kg REAL NOT NULL,
+        reps INTEGER, sets INTEGER, notes TEXT,
+        logged_at TEXT DEFAULT (datetime('now')))""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS body_weight (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        weight_kg REAL NOT NULL,
+        logged_at TEXT DEFAULT (datetime('now')))""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS reminders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT, remind_at TEXT, sent INTEGER DEFAULT 0)""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS jarvis_config (
+        key TEXT PRIMARY KEY, value TEXT)""")
 
-# ── contesto giornaliero per il system prompt ────────────────────────────────
+# ── ROUTING ───────────────────────────────────────────────────────────────────
 
-def build_context() -> str:
-    con = get_db()
-    cur = con.cursor()
-    ensure_tables(cur)
+HAS_NUMBER  = re.compile(r'\d')
+FINANCE_KW  = re.compile(r'sald|spes|pagat|guadagnat|entrat|uscit|transazion|soldi|budget|costo|euro|€|incassat', re.I)
+CALENDAR_KW = re.compile(r'calendar|event|agenda|appuntament|settiman|domani|domattina|quando|programm|impegn', re.I)
+FITNESS_KW  = re.compile(r'palest|allenament|workout|fitness|scheda|muscol|progress|panca|squat|stacco|curl|press|dips|affondi|eserciz', re.I)
+DIET_KW       = re.compile(r'mangi|prand|cen|colazion|spuntin|calori|macro|protein|carbo|grassi|kcal|pasto|cibo|mangiato', re.I)
+FINANCE_EXACT = re.compile(r'speso|pagato|incassat|guadagnat|€|euro|ricaric|prelevat|carta|revolut|saldo', re.I)
 
-    # saldo attuale
-    cur.execute("""
-        SELECT COALESCE(SUM(CASE WHEN direction='+' THEN amount ELSE -amount END), 0)
-        FROM transactions
-    """)
-    row = cur.fetchone()
-    saldo = row[0] if row else 0
+def classify(text: str) -> str:
+    """Classifica il messaggio per il routing ottimale del contesto.
 
-    # prossimo evento (da events se esistesse in db — fallback: non disponibile)
-    # gli eventi sono su Radicale, non SQLite, quindi non li leggiamo qui
+    Dieta con numeri (es. '100g pasta') → diet (ha bisogno del DB cibi per calcolare macro)
+    Task finanziaria/workout (es. '-15 pizza', '80kg panca') → task (solo numeri, niente contesto)
+    Query → categoria appropriata
+    """
+    # Dieta batte sempre i numeri: le quantità di cibo NON sono task finanziarie
+    if DIET_KW.search(text) and not FINANCE_EXACT.search(text):
+        return "diet"
+    if HAS_NUMBER.search(text):
+        return "task"
+    if FINANCE_KW.search(text):
+        return "finance"
+    if CALENDAR_KW.search(text):
+        return "calendar"
+    if FITNESS_KW.search(text):
+        return "fitness"
+    return "general"
 
-    # allenamento di oggi (rotazione A-C-B-riposo da 2026-04-07)
+# ── CONTEXT LOADERS ───────────────────────────────────────────────────────────
+
+def get_today_workout():
     BASE_DATE = datetime(2026, 4, 7)
-    ROTATION = ["A", "C", "B", "riposo"]
+    ROTATION  = ["A", "C", "B", "riposo"]
+    SCHEDA    = {"A": "Petto/Tricipiti/Spalle", "B": "Schiena/Bicipiti", "C": "Gambe/Glutei", "riposo": "Riposo"}
     delta = (datetime.now() - BASE_DATE).days
-    workout_today = ROTATION[delta % 4] if delta >= 0 else "riposo"
+    day = ROTATION[delta % 4] if delta >= 0 else "riposo"
+    return day, SCHEDA.get(day, "")
 
-    # ultimi pesi
-    cur.execute("""
-        SELECT exercise, weight_kg, reps, sets, logged_at
-        FROM workout_logs
-        WHERE id IN (
-            SELECT MAX(id) FROM workout_logs GROUP BY exercise
-        )
-        ORDER BY exercise
-    """)
-    last_weights = cur.fetchall()
-    con.close()
-
-    weights_str = ""
-    if last_weights:
-        weights_str = "\n".join(
-            f"  - {r[0]}: {r[1]}kg × {r[2]} reps × {r[3]} serie ({r[4][:10]})"
-            for r in last_weights
-        )
-    else:
-        weights_str = "  Nessun allenamento registrato ancora."
-
-    today_str = datetime.now().strftime("%A %d %B %Y, ore %H:%M")
-
-    return f"""Oggi è {today_str}.
-Allenamento di oggi: Giorno {workout_today}.
-Saldo attuale: €{saldo:.2f}.
-
-Ultimi pesi registrati:
-{weights_str}"""
-
-# ── system prompt ────────────────────────────────────────────────────────────
-
-SYSTEM_PROMPT = """Sei Jarvis, l'assistente personale di Matteo. Parli sempre in italiano, in modo diretto e conciso.
-
-Matteo ha 19 anni, studia, si allena con una scheda A/B/C e tiene traccia delle sue finanze.
-
-Puoi eseguire azioni concrete. Quando Matteo ti chiede di fare qualcosa che rientra in queste categorie, rispondi SEMPRE con un JSON alla fine del messaggio nel formato:
-<action>{"type": "TIPO", "params": {...}}</action>
-
-Tipi di azione disponibili:
-- add_transaction: params = {amount: numero positivo, direction: "+"|"-", note: stringa, category: stringa}
-- add_event: params = {title: stringa, start: "YYYY-MM-DDTHH:MM:SS", end: "YYYY-MM-DDTHH:MM:SS" (opzionale), description: stringa (opzionale)}
-- log_workout: params = {exercise: stringa, weight_kg: numero, reps: numero, sets: numero, notes: stringa (opzionale)}
-- set_reminder: params = {title: stringa, remind_at: "YYYY-MM-DDTHH:MM:SS"}
-
-Se non c'è nessuna azione da eseguire, non includere il tag <action>.
-
-Esempi:
-Matteo: "ho speso 15 euro per la pizza"
-Tu: "Registrato! €15 di uscita per pizza. <action>{"type": "add_transaction", "params": {"amount": 15, "direction": "-", "note": "pizza", "category": "cibo"}}</action>"
-
-Matteo: "oggi alla panca ho fatto 80kg per 5 ripetizioni per 3 serie"
-Tu: "Ottimo lavoro! Registrato. <action>{"type": "log_workout", "params": {"exercise": "panca", "weight_kg": 80, "reps": 5, "sets": 3}}</action>"
-
-Matteo: "ricordami di studiare domani alle 9"
-Tu: "Fatto! Promemoria impostato per domani alle 9. <action>{"type": "set_reminder", "params": {"title": "Studiare", "remind_at": "DOMANI_DATA_T09:00:00"}}</action>"
-
-Se Matteo fa una domanda, rispondi semplicemente senza action tag. Sii breve."""
-
-# ── cronologia conversazione ─────────────────────────────────────────────────
-
-def get_history(limit: int = 10) -> list[dict]:
-    con = get_db()
-    cur = con.cursor()
-    ensure_tables(cur)
-    cur.execute("""
-        SELECT role, content FROM conversation_history
-        ORDER BY id DESC LIMIT ?
-    """, (limit,))
-    rows = cur.fetchall()
-    con.close()
-    return [{"role": r[0], "content": r[1]} for r in reversed(rows)]
-
-def save_message(role: str, content: str):
-    con = get_db()
-    cur = con.cursor()
-    ensure_tables(cur)
-    cur.execute(
-        "INSERT INTO conversation_history (role, content) VALUES (?, ?)",
-        (role, content)
-    )
-    # Mantieni solo gli ultimi 50 messaggi totali
-    cur.execute("""
-        DELETE FROM conversation_history
-        WHERE id NOT IN (
-            SELECT id FROM conversation_history ORDER BY id DESC LIMIT 50
-        )
-    """)
-    con.commit()
-    con.close()
-
-# ── esecuzione azioni ────────────────────────────────────────────────────────
-
-def execute_action(action: dict) -> str | None:
-    """Esegue l'azione estratta dalla risposta di Claude. Ritorna messaggio di esito."""
-    action_type = action.get("type")
-    params = action.get("params", {})
-    con = get_db()
-    cur = con.cursor()
-    ensure_tables(cur)
-
+def ctx_finance(days=7) -> str:
+    con = get_db(); cur = con.cursor()
     try:
-        if action_type == "add_transaction":
-            cur.execute(
-                "INSERT INTO transactions (created_at, amount, direction, category, note) VALUES (?,?,?,?,?)",
-                (datetime.now().isoformat(), params["amount"], params.get("direction", "-"),
-                 params.get("category", "altro"), params.get("note", ""))
-            )
-            con.commit()
-            return "transazione salvata"
-
-        elif action_type == "log_workout":
-            cur.execute(
-                "INSERT INTO workout_logs (exercise, weight_kg, reps, sets, notes) VALUES (?,?,?,?,?)",
-                (params["exercise"], params["weight_kg"],
-                 params.get("reps"), params.get("sets"), params.get("notes",""))
-            )
-            con.commit()
-            return "allenamento salvato"
-
-        elif action_type == "set_reminder":
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS reminders (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    title TEXT, remind_at TEXT, sent INTEGER DEFAULT 0
-                )
-            """)
-            cur.execute(
-                "INSERT INTO reminders (title, remind_at) VALUES (?,?)",
-                (params["title"], params["remind_at"])
-            )
-            con.commit()
-            return "promemoria salvato"
-
-        elif action_type == "add_event":
-            # Chiama internamente la logica di Radicale
-            import requests
-            from requests.auth import HTTPBasicAuth
-            RADICALE_URL = "http://localhost:5232/matteo/calendar/"
-            RADICALE_AUTH = HTTPBasicAuth("matteo", "Mlizzo06")
-            uid = datetime.now().strftime("%Y%m%dT%H%M%S") + "@jarvis"
-            start = params["start"].replace("-","").replace(":","").split(".")[0]
-            end_raw = params.get("end", params["start"])
-            end = end_raw.replace("-","").replace(":","").split(".")[0]
-            ical = f"""BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:{uid}\r\nSUMMARY:{params['title']}\r\nDTSTART:{start}\r\nDTEND:{end}\r\nDESCRIPTION:{params.get('description','')}\r\nEND:VEVENT\r\nEND:VCALENDAR"""
-            requests.request("MKCOL", RADICALE_URL, auth=RADICALE_AUTH)
-            requests.put(RADICALE_URL + uid + ".ics", data=ical, auth=RADICALE_AUTH,
-                         headers={"Content-Type": "text/calendar"})
-            return "evento salvato"
-
-    except Exception as e:
-        return f"errore azione: {e}"
+        since = (datetime.now() - timedelta(days=days)).isoformat()
+        cur.execute("""SELECT created_at, amount, direction, category, note, account
+            FROM transactions WHERE created_at >= ? ORDER BY id DESC""", (since,))
+        rows = cur.fetchall()
+        cur.execute("SELECT COALESCE(SUM(CASE WHEN direction='+' THEN amount ELSE -amount END),0) FROM transactions WHERE account='cash'")
+        saldo_cash = cur.fetchone()[0]
+        cur.execute("SELECT COALESCE(SUM(CASE WHEN direction='+' THEN amount ELSE -amount END),0) FROM transactions WHERE account='revolut'")
+        saldo_revolut = cur.fetchone()[0]
+        header = f"Cash: €{saldo_cash:.2f} | Revolut: €{saldo_revolut:.2f}"
+        if not rows:
+            return f"{header}\nNessuna transazione negli ultimi {days} giorni."
+        lines   = "\n".join(f"{r[0][:10]} {'+'if r[2]=='+'else'-'}€{r[1]:.0f} {r[3] or ''} {r[4] or ''} [{r[5] or 'cash'}]" for r in rows)
+        tot_out = sum(r[1] for r in rows if r[2] == '-')
+        tot_in  = sum(r[1] for r in rows if r[2] == '+')
+        return f"{header}\nUltimi {days}gg — uscite €{tot_out:.0f}, entrate €{tot_in:.0f}\n{lines}"
     finally:
         con.close()
 
-import re
-
-def parse_action(reply: str) -> tuple[str, dict | None]:
-    """Estrae il tag <action>...</action> dalla risposta e lo rimuove dal testo."""
-    match = re.search(r"<action>(.*?)</action>", reply, re.DOTALL)
-    if not match:
-        return reply.strip(), None
-    clean_reply = reply[:match.start()].strip()
+def ctx_calendar(days=7) -> str:
     try:
-        action = json.loads(match.group(1).strip())
-        return clean_reply, action
-    except Exception:
-        return clean_reply, None
+        body = """<?xml version="1.0" encoding="utf-8"?>
+<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:prop><D:getetag/><C:calendar-data/></D:prop>
+  <C:filter><C:comp-filter name="VCALENDAR"><C:comp-filter name="VEVENT"/></C:comp-filter></C:filter>
+</C:calendar-query>"""
+        r = requests.request("REPORT", RADICALE_URL, data=body, auth=RADICALE_AUTH,
+            headers={"Content-Type": "application/xml; charset=utf-8", "Depth": "1"}, timeout=5)
+        if r.status_code not in [200, 207]:
+            return "Calendario non disponibile."
+        ical_blocks = re.findall(r"<[^:]+:calendar-data[^>]*>(.*?)</[^:]+:calendar-data>", r.text, re.DOTALL)
+        events = []
+        today  = datetime.now().date()
+        cutoff = today + timedelta(days=days)
+        for block in ical_blocks:
+            block = block.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+            vm = re.search(r"BEGIN:VEVENT(.*?)END:VEVENT", block, re.DOTALL)
+            if not vm: continue
+            vevent = vm.group(0)
+            def pv(k):
+                m = re.search(rf"^{k}[^:]*:(.+?)(?=\r?\n[^\s]|\Z)", vevent, re.MULTILINE | re.DOTALL)
+                return re.sub(r"\r?\n[ \t]", "", m.group(1)).strip() if m else ""
+            summary = pv("SUMMARY"); dtstart_raw = pv(r"DTSTART(?:;[^:]*)?")
+            if not summary: continue
+            dtstart = dtstart_raw.split(":")[-1] if ":" in dtstart_raw else dtstart_raw
+            try:
+                dt = datetime.strptime(dtstart[:15], "%Y%m%dT%H%M%S") if "T" in dtstart else datetime.strptime(dtstart[:8], "%Y%m%d")
+                if today <= dt.date() <= cutoff:
+                    events.append((dt, summary))
+            except: pass
+        events.sort(key=lambda e: e[0])
+        if not events:
+            return f"Nessun evento nei prossimi {days} giorni."
+        return "\n".join(f"{e[0].strftime('%d/%m %H:%M')} — {e[1]}" for e in events[:10])
+    except:
+        return "Calendario non disponibile."
 
-# ── endpoint principale ──────────────────────────────────────────────────────
+def ctx_diet() -> str:
+    """Contesto dieta: cibi nel DB + macro di oggi."""
+    con = get_db(); cur = con.cursor()
+    try:
+        # Foods DB
+        cur.execute("SELECT name, kcal_100g, protein_100g, carbs_100g, fat_100g FROM foods ORDER BY name")
+        foods = cur.fetchall()
+        foods_lines = "\n".join(f"  {f[0]}: {f[1]}kcal {f[2]}g prot {f[3]}g carbo {f[4]}g grassi" for f in foods)
+
+        # Pasti di oggi
+        today = datetime.now().date().isoformat()
+        cur.execute("SELECT description, kcal, protein, carbs, fat FROM meals WHERE logged_at >= ? ORDER BY logged_at", (today,))
+        meals = cur.fetchall()
+        if meals:
+            meals_lines = "\n".join(f"  {m[0]}: {m[1]:.0f}kcal {m[2]:.0f}g P {m[3]:.0f}g C {m[4]:.0f}g F" for m in meals)
+            tot_kcal = sum(m[1] for m in meals)
+            tot_p    = sum(m[2] for m in meals)
+            tot_c    = sum(m[3] for m in meals)
+            tot_f    = sum(m[4] for m in meals)
+            meals_section = f"Pasti oggi:\n{meals_lines}\nTotale: {tot_kcal:.0f}kcal | P:{tot_p:.0f}g C:{tot_c:.0f}g F:{tot_f:.0f}g\nTarget: 2330kcal | P:160g C:265g F:70g"
+        else:
+            meals_section = "Pasti oggi: nessuno ancora.\nTarget: 2330kcal | P:160g C:265g F:70g"
+
+        return f"DATABASE CIBI (per 100g):\n{foods_lines}\n\n{meals_section}"
+    finally:
+        con.close()
+
+def ctx_fitness() -> str:
+    con = get_db(); cur = con.cursor(); ensure_tables(cur)
+    try:
+        cur.execute("""SELECT exercise, weight_kg, reps, sets, logged_at
+            FROM workout_logs WHERE id IN (SELECT MAX(id) FROM workout_logs GROUP BY exercise)
+            ORDER BY exercise""")
+        weights = cur.fetchall()
+        cur.execute("SELECT weight_kg, logged_at FROM body_weight ORDER BY id DESC LIMIT 1")
+        bw = cur.fetchone()
+        lines = []
+        if bw:
+            lines.append(f"Peso corporeo: {bw[0]}kg ({bw[1][:10]})")
+        if weights:
+            lines += [f"{w[0]}: {w[1]}kg ×{w[2] or '?'} ×{w[3] or '?'} ({w[4][:10]})" for w in weights]
+        else:
+            lines.append("Nessun workout registrato.")
+        return "\n".join(lines)
+    finally:
+        con.close()
+
+def ctx_minimal() -> str:
+    now = datetime.now()
+    day, desc = get_today_workout()
+    con = get_db(); cur = con.cursor()
+    try:
+        cur.execute("SELECT COALESCE(SUM(CASE WHEN direction='+' THEN amount ELSE -amount END),0) FROM transactions")
+        saldo = cur.fetchone()[0]
+    except:
+        saldo = 0
+    finally:
+        con.close()
+    return f"{now.strftime('%d/%m/%Y %H:%M')} | Giorno {day} ({desc}) | Saldo €{saldo:.2f}"
+
+def build_rich_context() -> str:
+    """Contesto completo — solo per i report schedulati."""
+    day, desc = get_today_workout()
+    fin = ctx_finance(7)
+    cal = ctx_calendar(3)
+    fit = ctx_fitness()
+    con = get_db(); cur = con.cursor(); ensure_tables(cur)
+    try:
+        now = datetime.now().isoformat()
+        cur.execute("SELECT title, remind_at FROM reminders WHERE sent=0 AND remind_at > ? ORDER BY remind_at LIMIT 3", (now,))
+        reminders = cur.fetchall()
+    finally:
+        con.close()
+    rem = "\n".join(f"{r[1][:16]} — {r[0]}" for r in reminders) if reminders else "Nessuno"
+    return f"""━ REPORT {datetime.now().strftime('%d/%m %H:%M')} ━
+Giorno: {day} ({desc})
+
+FINANZE:
+{fin}
+
+CALENDARIO:
+{cal}
+
+FITNESS:
+{fit}
+
+PROMEMORIA:
+{rem}
+━━━━━━━━━━━━━━━━━━━━"""
+
+# ── SYSTEM PROMPTS ────────────────────────────────────────────────────────────
+
+TASK_PROMPT = """Sei Jarvis, assistente di Matteo (19 anni, Italia).
+Esegui l'azione e rispondi con UNA SOLA RIGA. Niente spiegazioni.
+Formato: ✅ [conferma breve]
+Data/ora attuale: {now}
+
+Azioni (tag DOPO la risposta):
+add_transaction: <action>{{"type":"add_transaction","params":{{"amount":N,"direction":"+"|"-","note":"S","category":"S","account":"cash"|"revolut"}}}}</action>
+Account: default "cash". Usa "revolut" se nel messaggio c'è "carta", "rev" o "revolut".
+log_meal: <action>{{"type":"log_meal","params":{{"description":"S","kcal":N,"protein":N,"carbs":N,"fat":N}}}}</action>
+add_food: <action>{{"type":"add_food","params":{{"name":"S","kcal_100g":N,"protein_100g":N,"carbs_100g":N,"fat_100g":N}}}}</action>
+log_workout: <action>{{"type":"log_workout","params":{{"exercise":"S","weight_kg":N,"reps":N,"sets":N}}}}</action>
+log_body_weight: <action>{{"type":"log_body_weight","params":{{"weight_kg":N}}}}</action>
+set_reminder: <action>{{"type":"set_reminder","params":{{"title":"S","remind_at":"YYYY-MM-DDTHH:MM:SS"}}}}</action>
+add_event: <action>{{"type":"add_event","params":{{"title":"S","start":"YYYY-MM-DDTHH:MM:SS","end":"YYYY-MM-DDTHH:MM:SS"}}}}</action>
+delete_event: <action>{{"type":"delete_event","params":{{"uid":"S"}}}}</action>"""
+
+QUERY_PROMPT = """Sei Jarvis, assistente di Matteo (19 anni, Italia).
+Rispondi direttamente con i dati. Niente intro, niente padding. Solo il dato richiesto.
+Italiano. Telegram markdown (*grassetto* _corsivo_). Emoji solo se utile."""
+
+DIET_PROMPT = """Sei Jarvis, assistente di Matteo (19 anni, Italia).
+Se il messaggio descrive un pasto o qualcosa mangiato → calcola i macro dal database cibi (o stima se non c'è) e logga con log_meal. Risposta: 1 riga con i macro.
+Se è una domanda sulla dieta → rispondi con i dati. Zero padding.
+Italiano. Target: 2330kcal | P:160g C:265g F:70g
+
+Azioni (tag DOPO la risposta):
+log_meal: <action>{{"type":"log_meal","params":{{"description":"S","kcal":N,"protein":N,"carbs":N,"fat":N}}}}</action>
+add_food: <action>{{"type":"add_food","params":{{"name":"S","kcal_100g":N,"protein_100g":N,"carbs_100g":N,"fat_100g":N}}}}</action>"""
+
+REPORT_PROMPT = """Sei Jarvis, assistente personale di Matteo Lizzo (19 anni, studente, Italia).
+Scheda: A(Petto/Tricipiti/Spalle) B(Schiena/Bicipiti) C(Gambe/Glutei) rotazione A→C→B→riposo dal 07/04/2026.
+Target: 2330kcal, 160g prot, 265g carbo, 70g grassi, peso target 77kg.
+Genera un briefing conciso e strutturato per Telegram. Italiano, diretto, emoji con moderazione."""
+
+# ── PARSING / ESECUZIONE AZIONI ───────────────────────────────────────────────
+
+def parse_actions(reply: str):
+    matches = re.findall(r"<action>(.*?)</action>", reply, re.DOTALL)
+    clean   = re.sub(r"<action>.*?</action>", "", reply, flags=re.DOTALL).strip()
+    actions = []
+    for m in matches:
+        try: actions.append(json.loads(m.strip()))
+        except: pass
+    return clean, actions
+
+def execute_action(action: dict) -> str:
+    t = action.get("type"); params = action.get("params", {})
+    con = get_db(); cur = con.cursor(); ensure_tables(cur)
+    try:
+        if t == "add_transaction":
+            cur.execute("INSERT INTO transactions (created_at,amount,direction,category,note,account) VALUES (?,?,?,?,?,?)",
+                (datetime.now().isoformat(), params["amount"], params.get("direction", "-"),
+                 params.get("category", "altro"), params.get("note", ""), params.get("account", "cash")))
+            con.commit()
+        elif t == "log_workout":
+            cur.execute("INSERT INTO workout_logs (exercise,weight_kg,reps,sets,notes,logged_at) VALUES (?,?,?,?,?,?)",
+                (params["exercise"].lower().strip(), params["weight_kg"],
+                 params.get("reps"), params.get("sets"), params.get("notes", ""), datetime.now().isoformat()))
+            con.commit()
+        elif t == "log_body_weight":
+            cur.execute("INSERT INTO body_weight (weight_kg,logged_at) VALUES (?,?)",
+                (params["weight_kg"], datetime.now().isoformat()))
+            con.commit()
+        elif t == "set_reminder":
+            cur.execute("INSERT INTO reminders (title,remind_at) VALUES (?,?)",
+                (params["title"], params["remind_at"]))
+            con.commit()
+        elif t == "add_event":
+            uid   = datetime.now().strftime("%Y%m%dT%H%M%S") + "@jarvis"
+            start = params["start"].replace("-", "").replace(":", "").split(".")[0]
+            end   = params.get("end", params["start"]).replace("-", "").replace(":", "").split(".")[0]
+            ical  = (f"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n"
+                     f"UID:{uid}\r\nSUMMARY:{params['title']}\r\n"
+                     f"DTSTART:{start}\r\nDTEND:{end}\r\n"
+                     f"DESCRIPTION:{params.get('description', '')}\r\nEND:VEVENT\r\nEND:VCALENDAR")
+            requests.request("MKCOL", RADICALE_URL, auth=RADICALE_AUTH)
+            requests.put(RADICALE_URL + uid + ".ics", data=ical, auth=RADICALE_AUTH,
+                         headers={"Content-Type": "text/calendar"})
+        elif t == "delete_event":
+            uid = params.get("uid", "")
+            if uid and "/" not in uid and ".." not in uid:
+                requests.delete(RADICALE_URL + uid + ".ics", auth=RADICALE_AUTH)
+        elif t == "log_meal":
+            cur.execute("INSERT INTO meals (logged_at,description,kcal,protein,carbs,fat) VALUES (?,?,?,?,?,?)",
+                (datetime.now().isoformat(), params.get("description",""), params.get("kcal",0),
+                 params.get("protein",0), params.get("carbs",0), params.get("fat",0)))
+            con.commit()
+        elif t == "add_food":
+            cur.execute("INSERT OR REPLACE INTO foods (name,kcal_100g,protein_100g,carbs_100g,fat_100g) VALUES (?,?,?,?,?)",
+                (params["name"].lower().strip(), params.get("kcal_100g",0), params.get("protein_100g",0),
+                 params.get("carbs_100g",0), params.get("fat_100g",0)))
+            con.commit()
+        elif t == "send_file":
+            chat_id = params.get("chat_id")
+            if not chat_id:
+                cur.execute("SELECT value FROM jarvis_config WHERE key='last_chat_id'")
+                row = cur.fetchone(); chat_id = row[0] if row else None
+            path = params.get("path", "")
+            if chat_id and TELEGRAM_TOKEN and path and os.path.exists(path):
+                with open(path, "rb") as f:
+                    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument",
+                        data={"chat_id": chat_id}, files={"document": f})
+        return "ok"
+    except Exception as e:
+        return f"errore: {e}"
+    finally:
+        con.close()
+
+# ── HISTORY (solo per query) ──────────────────────────────────────────────────
+
+def get_history(limit=6):
+    con = get_db(); cur = con.cursor(); ensure_tables(cur)
+    cur.execute("SELECT role,content FROM conversation_history ORDER BY id DESC LIMIT ?", (limit,))
+    rows = cur.fetchall(); con.close()
+    return [{"role": r[0], "content": r[1]} for r in reversed(rows)]
+
+def save_messages(user_text: str, assistant_text: str):
+    con = get_db(); cur = con.cursor(); ensure_tables(cur)
+    cur.execute("INSERT INTO conversation_history (role,content) VALUES (?,?)", ("user", user_text))
+    cur.execute("INSERT INTO conversation_history (role,content) VALUES (?,?)", ("assistant", assistant_text))
+    cur.execute("DELETE FROM conversation_history WHERE id NOT IN (SELECT id FROM conversation_history ORDER BY id DESC LIMIT 30)")
+    con.commit(); con.close()
+
+def save_chat_id(chat_id: str):
+    con = get_db(); cur = con.cursor(); ensure_tables(cur)
+    cur.execute("INSERT OR REPLACE INTO jarvis_config (key,value) VALUES (?,?)", ("last_chat_id", chat_id))
+    con.commit(); con.close()
+
+# ── ENDPOINT PRINCIPALE ───────────────────────────────────────────────────────
 
 class CommandIn(BaseModel):
     text: str
+    chat_id: str | None = None
 
 @router.post("/command")
 async def command(body: CommandIn):
-    if not ANTHROPIC_API_KEY:
-        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY non configurata")
+    if not ANTHROPIC_KEY:
+        raise HTTPException(500, "ANTHROPIC_API_KEY non configurata")
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(400, "Testo vuoto")
 
-    user_text = body.text.strip()
-    if not user_text:
-        raise HTTPException(status_code=400, detail="Testo vuoto")
+    if body.chat_id:
+        save_chat_id(body.chat_id)
 
-    # Costruisci contesto + cronologia
-    context = build_context()
-    history = get_history(limit=10)
+    category = classify(text)
+    client   = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 
-    messages = history + [{"role": "user", "content": user_text}]
+    if category == "task":
+        system   = TASK_PROMPT.format(now=datetime.now().strftime("%d/%m/%Y %H:%M"))
+        messages = [{"role": "user", "content": text}]
+        max_tok  = 150
+    else:
+        if category == "finance":
+            context = ctx_finance(7)
+            system_base = QUERY_PROMPT
+        elif category == "calendar":
+            context = ctx_calendar(7)
+            system_base = QUERY_PROMPT
+        elif category == "diet":
+            context = ctx_diet()
+            system_base = DIET_PROMPT
+        elif category == "fitness":
+            context = ctx_fitness()
+            system_base = QUERY_PROMPT
+        else:
+            context = ctx_minimal()
+            system_base = QUERY_PROMPT
 
-    # Chiama Claude
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        system   = system_base + "\n\n" + context
+        messages = get_history(6) + [{"role": "user", "content": text}]
+        max_tok  = 400
+
     response = client.messages.create(
-        model="claude-opus-4-6",
-        max_tokens=1024,
-        system=SYSTEM_PROMPT + "\n\n--- Contesto attuale ---\n" + context,
+        model=MODEL,
+        max_tokens=max_tok,
+        system=system,
         messages=messages,
     )
 
-    raw_reply = response.content[0].text
-    clean_reply, action = parse_action(raw_reply)
+    raw_reply            = response.content[0].text
+    clean_reply, actions = parse_actions(raw_reply)
 
-    # Salva nella cronologia
-    save_message("user", user_text)
-    save_message("assistant", clean_reply)
+    if category != "task":
+        save_messages(text, clean_reply)
 
-    # Esegui azione se presente
-    action_result = None
-    if action:
-        action_result = execute_action(action)
+    results = [{"type": a.get("type"), "result": execute_action(a)} for a in actions]
+    return {"reply": clean_reply, "actions": results}
 
-    return {
-        "reply": clean_reply,
-        "action": action.get("type") if action else None,
-        "action_result": action_result,
-    }
-
-
-# ── endpoint audio (Whisper) ─────────────────────────────────────────────────
+# ── ENDPOINT AUDIO ────────────────────────────────────────────────────────────
 
 @router.post("/command/audio")
-async def command_audio(file: UploadFile = File(...)):
-    """Riceve un file audio, trascrive con Whisper, passa a Claude."""
+async def command_audio(file: UploadFile = File(...), chat_id: str | None = None):
     try:
         from faster_whisper import WhisperModel
     except ImportError:
-        raise HTTPException(status_code=501, detail="faster-whisper non installato. Esegui: pip install faster-whisper")
-
+        raise HTTPException(501, "faster-whisper non installato")
     import tempfile, shutil
-
-    # Salva file temporaneo
     suffix = "." + (file.filename.split(".")[-1] if file.filename else "ogg")
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        shutil.copyfileobj(file.file, tmp)
-        tmp_path = tmp.name
-
+        shutil.copyfileobj(file.file, tmp); tmp_path = tmp.name
     try:
-        # Trascrivi
-        model = WhisperModel("small", device="cpu", compute_type="int8")
+        model       = WhisperModel("small", device="cpu", compute_type="int8")
         segments, _ = model.transcribe(tmp_path, language="it")
-        text = " ".join(seg.text.strip() for seg in segments).strip()
+        text        = " ".join(seg.text.strip() for seg in segments).strip()
     finally:
         os.unlink(tmp_path)
-
     if not text:
-        return {"reply": "Non ho capito l'audio, puoi ripetere?", "transcription": ""}
-
-    # Passa a Claude esattamente come il comando testuale
-    result = await command(CommandIn(text=text))
+        return {"reply": "Non ho capito l'audio, puoi ripetere?", "transcription": "", "actions": []}
+    result = await command(CommandIn(text=text, chat_id=chat_id))
     result["transcription"] = text
     return result
+
+# ── ENDPOINT REPORT (per lo scheduler) ───────────────────────────────────────
+
+@router.post("/command/report")
+async def report(body: CommandIn):
+    """Usato dallo scheduler per i briefing mattutini/serali."""
+    if not ANTHROPIC_KEY:
+        raise HTTPException(500, "ANTHROPIC_API_KEY non configurata")
+    if body.chat_id:
+        save_chat_id(body.chat_id)
+    context  = build_rich_context()
+    client   = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=500,
+        system=REPORT_PROMPT + "\n\n" + context,
+        messages=[{"role": "user", "content": body.text}],
+    )
+    raw_reply            = response.content[0].text
+    clean_reply, actions = parse_actions(raw_reply)
+    results = [{"type": a.get("type"), "result": execute_action(a)} for a in actions]
+    return {"reply": clean_reply, "actions": results}

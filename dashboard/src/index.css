@@ -42,40 +42,32 @@
 /* ── SFONDI PER MODULO (gradient animati, sostituibili con foto) ── */
 .bg-cashflow {
   background:
-    radial-gradient(ellipse 90% 70% at 15% 0%,   rgba(99,102,241,0.30) 0%, transparent 55%),
-    radial-gradient(ellipse 70% 60% at 85% 100%,  rgba(139,92,246,0.20) 0%, transparent 55%),
-    radial-gradient(ellipse 50% 80% at 50% 50%,   rgba(5,5,20,1) 0%, transparent 100%),
-    #050510;
+    linear-gradient(to bottom, rgba(10,5,20,0.55) 0%, rgba(10,5,20,0.75) 100%),
+    url('/backgrounds/bg-rosso.avif') center/cover no-repeat;
   animation: bgPulse 12s ease-in-out infinite alternate;
 }
 .bg-calendar {
   background:
-    radial-gradient(ellipse 90% 70% at 10% 10%,   rgba(37,99,235,0.28) 0%, transparent 55%),
-    radial-gradient(ellipse 60% 50% at 90% 90%,   rgba(14,165,233,0.18) 0%, transparent 55%),
-    radial-gradient(ellipse 50% 80% at 50% 50%,   rgba(2,5,20,1) 0%, transparent 100%),
-    #020510;
+    linear-gradient(to bottom, rgba(2,5,25,0.50) 0%, rgba(2,5,25,0.72) 100%),
+    url('/backgrounds/bg-blu.avif') center/cover no-repeat;
   animation: bgPulse 14s ease-in-out infinite alternate;
 }
 .bg-fitness {
   background:
-    radial-gradient(ellipse 85% 65% at 20% 5%,    rgba(5,150,105,0.28) 0%, transparent 55%),
-    radial-gradient(ellipse 65% 55% at 80% 95%,   rgba(52,211,153,0.16) 0%, transparent 55%),
-    radial-gradient(ellipse 50% 80% at 50% 50%,   rgba(2,12,8,1) 0%, transparent 100%),
-    #020c08;
+    linear-gradient(to bottom, rgba(2,12,8,0.50) 0%, rgba(2,12,8,0.72) 100%),
+    url('/backgrounds/bg-verde.avif') center/cover no-repeat;
   animation: bgPulse 10s ease-in-out infinite alternate;
 }
 .bg-files {
   background:
-    radial-gradient(ellipse 85% 65% at 15% 0%,    rgba(180,83,9,0.28) 0%, transparent 55%),
-    radial-gradient(ellipse 65% 55% at 85% 100%,  rgba(251,191,36,0.16) 0%, transparent 55%),
-    radial-gradient(ellipse 50% 80% at 50% 50%,   rgba(15,8,2,1) 0%, transparent 100%),
-    #0f0802;
+    linear-gradient(to bottom, rgba(15,10,2,0.50) 0%, rgba(15,10,2,0.72) 100%),
+    url('/backgrounds/bg-giallo.avif') center/cover no-repeat;
   animation: bgPulse 13s ease-in-out infinite alternate;
 }
 .bg-settings {
   background:
-    radial-gradient(ellipse 80% 60% at 50% 0%,    rgba(71,85,105,0.25) 0%, transparent 55%),
-    #070810;
+    linear-gradient(to bottom, rgba(8,8,12,0.55) 0%, rgba(8,8,12,0.72) 100%),
+    url('/backgrounds/bg-grigio.avif') center/cover no-repeat;
 }
 
 @keyframes bgPulse {
