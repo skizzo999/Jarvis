@@ -14,7 +14,7 @@ RADICALE_URL   = "http://localhost:5232/matteo/calendar/"
 RADICALE_AUTH  = HTTPBasicAuth("matteo", "Mlizzo06")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 ANTHROPIC_KEY  = os.getenv("ANTHROPIC_API_KEY", "")
-MODEL          = "claude-haiku-4-5-20251001"
+MODEL          = "claude-haiku-4-5-20251001"  # ← AGGIUNTO: modello definito
 
 # ── DB ────────────────────────────────────────────────────────────────────────
 
@@ -40,6 +40,15 @@ def ensure_tables(cur):
         title TEXT, remind_at TEXT, sent INTEGER DEFAULT 0)""")
     cur.execute("""CREATE TABLE IF NOT EXISTS jarvis_config (
         key TEXT PRIMARY KEY, value TEXT)""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS foods (
+        name TEXT PRIMARY KEY, kcal_100g REAL, protein_100g REAL,
+        carbs_100g REAL, fat_100g REAL)""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS meals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, logged_at TEXT,
+        description TEXT, kcal REAL, protein REAL, carbs REAL, fat REAL)""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT,
+        amount REAL, direction TEXT, category TEXT, note TEXT, account TEXT)""")
 
 # ── ROUTING ───────────────────────────────────────────────────────────────────
 
@@ -51,13 +60,6 @@ DIET_KW       = re.compile(r'mangi|prand|cen|colazion|spuntin|calori|macro|prote
 FINANCE_EXACT = re.compile(r'speso|pagato|incassat|guadagnat|€|euro|ricaric|prelevat|carta|revolut|saldo', re.I)
 
 def classify(text: str) -> str:
-    """Classifica il messaggio per il routing ottimale del contesto.
-
-    Dieta con numeri (es. '100g pasta') → diet (ha bisogno del DB cibi per calcolare macro)
-    Task finanziaria/workout (es. '-15 pizza', '80kg panca') → task (solo numeri, niente contesto)
-    Query → categoria appropriata
-    """
-    # Dieta batte sempre i numeri: le quantità di cibo NON sono task finanziarie
     if DIET_KW.search(text) and not FINANCE_EXACT.search(text):
         return "diet"
     if HAS_NUMBER.search(text):
@@ -133,22 +135,37 @@ def ctx_calendar(days=7) -> str:
                     events.append((dt, summary))
             except: pass
         events.sort(key=lambda e: e[0])
+        # Aggiungi promemoria dal DB SQLite
+        try:
+            import sqlite3 as _sq
+            _conn = _sq.connect("/home/jarvis/data/jarvis.db")
+            _cur = _conn.cursor()
+            _cutoff_iso = cutoff.strftime("%Y-%m-%dT23:59:59")
+            _today_iso = today.isoformat()
+            _cur.execute(
+                "SELECT title, remind_at FROM reminders WHERE sent=0 AND remind_at >= ? AND remind_at <= ? ORDER BY remind_at",
+                (_today_iso, _cutoff_iso)
+            )
+            for _row in _cur.fetchall():
+                try:
+                    _dt = datetime.fromisoformat(_row[1])
+                    events.append((_dt, f"🔔 {_row[0]}"))
+                except: pass
+            _conn.close()
+            events.sort(key=lambda e: e[0])
+        except: pass
         if not events:
             return f"Nessun evento nei prossimi {days} giorni."
-        return "\n".join(f"{e[0].strftime('%d/%m %H:%M')} — {e[1]}" for e in events[:10])
+        return "\n".join(f"{e[0].strftime('%d/%m %H:%M')} — {e[1]}" for e in events[:15])
     except:
         return "Calendario non disponibile."
 
 def ctx_diet() -> str:
-    """Contesto dieta: cibi nel DB + macro di oggi."""
     con = get_db(); cur = con.cursor()
     try:
-        # Foods DB
         cur.execute("SELECT name, kcal_100g, protein_100g, carbs_100g, fat_100g FROM foods ORDER BY name")
         foods = cur.fetchall()
         foods_lines = "\n".join(f"  {f[0]}: {f[1]}kcal {f[2]}g prot {f[3]}g carbo {f[4]}g grassi" for f in foods)
-
-        # Pasti di oggi
         today = datetime.now().date().isoformat()
         cur.execute("SELECT description, kcal, protein, carbs, fat FROM meals WHERE logged_at >= ? ORDER BY logged_at", (today,))
         meals = cur.fetchall()
@@ -161,7 +178,6 @@ def ctx_diet() -> str:
             meals_section = f"Pasti oggi:\n{meals_lines}\nTotale: {tot_kcal:.0f}kcal | P:{tot_p:.0f}g C:{tot_c:.0f}g F:{tot_f:.0f}g\nTarget: 2330kcal | P:160g C:265g F:70g"
         else:
             meals_section = "Pasti oggi: nessuno ancora.\nTarget: 2330kcal | P:160g C:265g F:70g"
-
         return f"DATABASE CIBI (per 100g):\n{foods_lines}\n\n{meals_section}"
     finally:
         con.close()
@@ -200,7 +216,6 @@ def ctx_minimal() -> str:
     return f"{now.strftime('%d/%m/%Y %H:%M')} | Giorno {day} ({desc}) | Saldo €{saldo:.2f}"
 
 def build_rich_context() -> str:
-    """Contesto completo — solo per i report schedulati."""
     day, desc = get_today_workout()
     fin = ctx_finance(7)
     cal = ctx_calendar(3)
@@ -238,16 +253,18 @@ Data/ora attuale: {now}
 
 Azioni (tag DOPO la risposta):
 add_transaction: <action>{{"type":"add_transaction","params":{{"amount":N,"direction":"+"|"-","note":"S","category":"S","account":"cash"|"revolut"}}}}</action>
-Account: default "cash". Usa "revolut" se nel messaggio c'è "carta", "rev" o "revolut".
 log_meal: <action>{{"type":"log_meal","params":{{"description":"S","kcal":N,"protein":N,"carbs":N,"fat":N}}}}</action>
 add_food: <action>{{"type":"add_food","params":{{"name":"S","kcal_100g":N,"protein_100g":N,"carbs_100g":N,"fat_100g":N}}}}</action>
 log_workout: <action>{{"type":"log_workout","params":{{"exercise":"S","weight_kg":N,"reps":N,"sets":N}}}}</action>
 log_body_weight: <action>{{"type":"log_body_weight","params":{{"weight_kg":N}}}}</action>
 set_reminder: <action>{{"type":"set_reminder","params":{{"title":"S","remind_at":"YYYY-MM-DDTHH:MM:SS"}}}}</action>
 add_event: <action>{{"type":"add_event","params":{{"title":"S","start":"YYYY-MM-DDTHH:MM:SS","end":"YYYY-MM-DDTHH:MM:SS"}}}}</action>
-delete_event: <action>{{"type":"delete_event","params":{{"uid":"S"}}}}</action>"""
+delete_event: <action>{{"type":"delete_event","params":{{"uid":"S"}}}}</action>
+delete_record: <action>{{"type":"delete_record","params":{{"entity":"transazione|pasto|allenamento|promemoria|peso|evento","filters":{{...}},"limit":1}}}}</action>"""
 
-QUERY_PROMPT = """Sei Jarvis, assistente di Matteo (19 anni, Italia).
+QUERY_PROMPT = """Sei Jarvis, assistente vocale e testuale di Matteo (19 anni, Italia).
+Ricevi messaggi già trascritti da audio (pipeline voce→testo automatica). Rispondi come se fosse testo normale.
+Data/ora attuale: {now}
 Rispondi direttamente con i dati. Niente intro, niente padding. Solo il dato richiesto.
 Italiano. Telegram markdown (*grassetto* _corsivo_). Emoji solo se utile."""
 
@@ -261,7 +278,7 @@ log_meal: <action>{{"type":"log_meal","params":{{"description":"S","kcal":N,"pro
 add_food: <action>{{"type":"add_food","params":{{"name":"S","kcal_100g":N,"protein_100g":N,"carbs_100g":N,"fat_100g":N}}}}</action>"""
 
 REPORT_PROMPT = """Sei Jarvis, assistente personale di Matteo Lizzo (19 anni, studente, Italia).
-Scheda: A(Petto/Tricipiti/Spalle) B(Schiena/Bicipiti) C(Gambe/Glutei) rotazione A→C→B→riposo dal 07/04/2026.
+Scheda: A(Petto/Tricipiti/Spalle) B(Schiena/Bicipiti) C(Gambe/Glutei) rotazione A→riposoC→camminataB→riposo→camminata dal 07/04/2026.
 Target: 2330kcal, 160g prot, 265g carbo, 70g grassi, peso target 77kg.
 Genera un briefing conciso e strutturato per Telegram. Italiano, diretto, emoji con moderazione."""
 
@@ -275,6 +292,77 @@ def parse_actions(reply: str):
         try: actions.append(json.loads(m.strip()))
         except: pass
     return clean, actions
+
+def execute_delete(params: dict) -> str:
+    """Eliminazione unificata e sicura per tutte le entità."""
+    entity = params.get("entity", "").lower()
+    filters = params.get("filters", {})
+    limit = params.get("limit", 1)
+
+    # Eventi CalDAV
+    if entity == "evento":
+        uid = filters.get("uid")
+        if not uid:
+            return "⚠️ Per eliminare un evento serve l'UID."
+        try:
+            requests.delete(f"{RADICALE_URL}{uid}.ics", auth=RADICALE_AUTH)
+            return f"✅ Evento eliminato dal calendario."
+        except Exception as e:
+            return f"Errore eliminazione evento: {e}"
+
+    ENTITY_MAP = {
+        "transazione": ("transactions", "created_at"),
+        "pasto": ("meals", "logged_at"),
+        "allenamento": ("workout_logs", "logged_at"),
+        "promemoria": ("reminders", "remind_at"),
+        "peso": ("body_weight", "logged_at")
+    }
+
+    if entity not in ENTITY_MAP:
+        return f"❌ Entità '{entity}' non supportata."
+
+    table, time_col = ENTITY_MAP[entity]
+    con = get_db()
+    cur = con.cursor()
+
+    conditions, values = [], []
+    if "periodo" in filters:
+        p = filters["periodo"]
+        if p == "oggi": conditions.append(f"DATE({time_col}) = DATE('now')")
+        elif p == "ieri": conditions.append(f"DATE({time_col}) = DATE('now', '-1 day')")
+        elif p == "settimana": conditions.append(f"{time_col} >= datetime('now', '-7 days')")
+    else:
+        for k, v in filters.items():
+            if k == "periodo": continue
+            conditions.append(f"{k} = ?")
+            values.append(v)
+
+    if not conditions:
+        con.close()
+        return "⚠️ Specifica un periodo o un criterio per sicurezza."
+
+    where_clause = " AND ".join(conditions)
+
+    try:
+        if limit == 1:
+            cur.execute(f"SELECT id FROM {table} WHERE {where_clause} ORDER BY {time_col} DESC LIMIT 1", values)
+            row = cur.fetchone()
+            if not row:
+                con.close()
+                return f"⚠️ Nessun {entity} trovato con questi criteri."
+            cur.execute(f"DELETE FROM {table} WHERE id = ?", (row[0],))
+            con.commit()
+            con.close()
+            return f"✅ Eliminato ultimo {entity} corrispondente."
+        else:
+            cur.execute(f"DELETE FROM {table} WHERE {where_clause}", values)
+            deleted = cur.rowcount
+            con.commit()
+            con.close()
+            return f"✅ Eliminati {deleted} record di tipo {entity}."
+    except Exception as e:
+        con.close()
+        return f"Errore DB: {e}"
 
 def execute_action(action: dict) -> str:
     t = action.get("type"); params = action.get("params", {})
@@ -333,6 +421,8 @@ def execute_action(action: dict) -> str:
                 with open(path, "rb") as f:
                     requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument",
                         data={"chat_id": chat_id}, files={"document": f})
+        elif t == "delete_record":
+            return execute_delete(params)  # ← AGGIUNTO: chiamata alla funzione di eliminazione
         return "ok"
     except Exception as e:
         return f"errore: {e}"
@@ -400,7 +490,7 @@ async def command(body: CommandIn):
             context = ctx_minimal()
             system_base = QUERY_PROMPT
 
-        system   = system_base + "\n\n" + context
+        system   = system_base.format(now=datetime.now().strftime("%d/%m/%Y %H:%M")) + "\n\n" + context
         messages = get_history(6) + [{"role": "user", "content": text}]
         max_tok  = 400
 

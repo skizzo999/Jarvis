@@ -5,7 +5,6 @@ import CashFlowPage  from "./modules/cashflow/CashFlowPage";
 import CalendarPage  from "./modules/calendar/CalendarPage";
 import FitnessPage   from "./modules/fitness/FitnessPage";
 import FilesPage     from "./modules/files/FilesPage";
-import SettingsPage  from "./modules/settings/SettingsPage";
 import "./index.css";
 
 export default function App() {
@@ -24,7 +23,6 @@ export default function App() {
           <Route path="/calendar" element={<CalendarPage/>}/>
           <Route path="/fitness"  element={<FitnessPage/>}/>
           <Route path="/files"    element={<FilesPage/>}/>
-          <Route path="/settings" element={<SettingsPage/>}/>
         </Routes>
       </Shell>
     </BrowserRouter>

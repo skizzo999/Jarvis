@@ -6,7 +6,6 @@ const MODULES = [
   { id: 'calendar',  label: 'Calendario', icon: '📅', path: '/calendar' },
   { id: 'fitness',   label: 'Fitness',    icon: '💪', path: '/fitness' },
   { id: 'files',     label: 'File',       icon: '📁', path: '/files' },
-  { id: 'settings',  label: 'Settings',   icon: '⚙️',  path: '/settings' },
 ];
 
 export default function BottomNav() {

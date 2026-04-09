@@ -70,7 +70,7 @@ function WorkoutCard({ dayKey, lastWeights, isToday }) {
           {isToday && (
             <span style={{
               fontSize:9, fontWeight:700, letterSpacing:"0.6px",
-              background:"rgba(255,255,255,0.08)", border:"1px solid rgba(255,255,255,0.14)",
+              background:"rgba(255,255,255,0.07)", border:"1px solid rgba(255,255,255,0.12)",
               borderRadius:6, padding:"2px 7px", color:day.color,
               fontFamily:"var(--font)", textTransform:"uppercase",
             }}>oggi</span>
@@ -92,7 +92,7 @@ function WorkoutCard({ dayKey, lastWeights, isToday }) {
               return (
                 <div key={ex.nome} style={{
                   display:"grid", gridTemplateColumns:"1fr 70px 60px 70px", gap:6, alignItems:"center",
-                  padding:"8px 12px", background:"rgba(255,255,255,0.03)",
+                  padding:"8px 12px", background:"rgba(255,255,255,0.05)",
                   borderRadius:10, border:"1px solid rgba(255,255,255,0.06)",
                 }}>
                   <span style={{ fontSize:11, color:"var(--text)", fontFamily:"var(--font)" }}>{ex.nome}</span>

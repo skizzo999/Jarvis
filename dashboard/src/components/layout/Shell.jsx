@@ -10,7 +10,6 @@ const BG_MAP = {
   "/calendar": "bg-calendar",
   "/fitness":  "bg-fitness",
   "/files":    "bg-files",
-  "/settings": "bg-settings",
 };
 
 export default function Shell({ children, dailyData }) {
