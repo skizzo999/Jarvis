@@ -1,85 +1,85 @@
 # 🤖 Jarvis — Personal Autonomous Assistant
 
-> AI-first personal assistant controllabile via Telegram e Dashboard web.  
+> AI-first personal assistant controlled via Telegram and a web Dashboard.  
 > Self-hosted · FastAPI · n8n · Claude API · React
 
 -----
 
 ## Demo
 
-<!-- Screenshot dashboard -->
+<!-- Dashboard screenshot -->
 
 <!-- ![Dashboard](docs/dashboard.png) -->
 
-<!-- Video demo Telegram -->
+<!-- Telegram demo video -->
 
-<!-- [▶ Guarda il demo](https://link-al-video) -->
+<!-- [▶ Watch the demo](https://link-to-video) -->
 
-*Screenshot e video in arrivo.*
-
------
-
-## Cosa fa
-
-Jarvis riceve comandi in **linguaggio naturale** via Telegram, li interpreta con AI e agisce — registra dati, genera report, organizza file, manda notifiche. Tutto aggiornato in tempo reale su una dashboard web.
-
-|Modulo           |Funzione                                                                   |
-|-----------------|---------------------------------------------------------------------------|
-|💰 Cash Flow      |Traccia entrate/uscite in linguaggio naturale, grafici e report su Telegram|
-|📅 Calendario     |Crea e gestisce eventi Notion scrivendo su Telegram                        |
-|🗂️ Smart Storage  |Upload file → AI li categorizza e organizza automaticamente                |
-|🔍 File Analyzer  |Analizza PDF, codice, immagini, Excel e restituisce riassunti strutturati  |
-|🔔 Notifiche      |Report automatici mattutini, reminder eventi, alert su soglie              |
-|💪 Fitness Tracker|Allenamento, dieta, macro AI, peso corporeo — tutto tracciato e graficato  |
+*Screenshots and video coming soon.*
 
 -----
 
-## Architettura
+## What it does
+
+Jarvis receives commands in **natural language** via Telegram, interprets them with AI, and acts — logs data, generates reports, organizes files, sends notifications. Everything updates in real time on a web dashboard.
+
+|Module           |Function                                                                       |
+|-----------------|-------------------------------------------------------------------------------|
+|💰 Cash Flow      |Track income and expenses in natural language, with charts and Telegram reports|
+|📅 Calendar       |Create and manage Notion events by writing on Telegram                         |
+|🗂️ Smart Storage  |Upload a file → AI categorizes and organizes it automatically                  |
+|🔍 File Analyzer  |Analyzes PDFs, code, images, Excel files and returns structured summaries      |
+|🔔 Notifications  |Automatic morning reports, event reminders, threshold alerts                   |
+|💪 Fitness Tracker|Workouts, diet, AI macro tracking, body weight — all logged and charted        |
+
+-----
+
+## Architecture
 
 ```
 Telegram / Dashboard
         ↓
-       n8n          ← orchestrazione flussi, webhook
+       n8n          ← flow orchestration, webhooks
         ↓
-    Claude API      ← NL → JSON strutturato { action, params }
+    Claude API      ← NL → structured JSON { action, params }
         ↓
-     FastAPI        ← esecuzione azioni, CRUD, logica
+     FastAPI        ← action execution, CRUD, business logic
         ↓
-    PostgreSQL      ← persistenza dati
+    PostgreSQL      ← data persistence
         ↓
-  React Dashboard   ← grafici, tabelle, controlli (Recharts + Tailwind)
+  React Dashboard   ← charts, tables, controls (Recharts + Tailwind)
 ```
 
 -----
 
 ## Stack
 
-|Layer        |Tecnologia                                |
-|-------------|------------------------------------------|
-|Orchestratore|n8n self-hosted (Docker)                  |
-|AI Engine    |Claude API                                |
-|Backend      |Python 3.11 + FastAPI                     |
-|Database     |SQLite → PostgreSQL                       |
-|Frontend     |React + Vite + Recharts + TailwindCSS     |
-|Proxy        |Nginx + SSL (Certbot)                     |
-|Deploy       |Server Linux self-hosted, systemd + Docker|
+|Layer       |Technology                                |
+|------------|------------------------------------------|
+|Orchestrator|n8n self-hosted (Docker)                  |
+|AI Engine   |Claude API                                |
+|Backend     |Python 3.11 + FastAPI                     |
+|Database    |SQLite → PostgreSQL                       |
+|Frontend    |React + Vite + Recharts + TailwindCSS     |
+|Proxy       |Nginx + SSL (Certbot)                     |
+|Deploy      |Self-hosted Linux server, systemd + Docker|
 
 -----
 
-## Installazione
+## Getting Started
 
-> Prerequisiti: Docker, Python 3.11+, Node.js 18+
+> Prerequisites: Docker, Python 3.11+, Node.js 18+
 
 ```bash
-# Clona il repo
+# Clone the repository
 git clone https://github.com/skizzo999/Jarvis.git
 cd Jarvis
 
-# Copia e configura le variabili d'ambiente
+# Copy and configure environment variables
 cp .env.example .env
-# → inserisci API key Claude, token Telegram, credenziali DB
+# → fill in Claude API key, Telegram token, DB credentials
 
-# Avvia i servizi
+# Start services
 docker compose up -d
 
 # Backend
@@ -95,9 +95,9 @@ npm run dev
 
 -----
 
-## Variabili d’ambiente
+## Environment Variables
 
-Crea un file `.env` nella root basandoti su `.env.example`:
+Create a `.env` file in the root based on `.env.example`:
 
 ```env
 ANTHROPIC_API_KEY=
@@ -106,22 +106,22 @@ DATABASE_URL=
 NOTION_TOKEN=
 ```
 
-⚠️ Non committare mai il file `.env`.
+⚠️ Never commit your `.env` file.
 
 -----
 
-## Moduli — stato attuale
+## Modules — current status
 
-- [x] Modulo 0 — Cash Flow + Grafici
-- [x] Modulo 1 — Calendario Notion
-- [x] Modulo 2 — Smart Storage
-- [x] Modulo 3 — File Analyzer
-- [x] Modulo 4 — Dashboard Pro
-- [x] Modulo 5 — Notifiche & Scheduler
-- [x] Modulo 6 — Fitness Tracker
+- [x] Module 0 — Cash Flow + Charts
+- [x] Module 1 — Notion Calendar
+- [x] Module 2 — Smart Storage
+- [x] Module 3 — File Analyzer
+- [x] Module 4 — Pro Dashboard
+- [x] Module 5 — Notifications & Scheduler
+- [x] Module 6 — Fitness Tracker
 
 -----
 
-## Licenza
+## License
 
-Questo progetto è privato. Tutti i diritti riservati.
+This project is private. All rights reserved.
