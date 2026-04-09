@@ -1,0 +1,698 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "id": "855f7b98-eb2a-4e80-a10c-d95859d38c68",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        432,
+        848
+      ],
+      "webhookId": "jarvis-master-webhook",
+      "credentials": {
+        "telegramApi": {
+          "id": "neihwSgYxE17V6BG",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "is-file",
+              "leftValue": "={{ !!$json.message.document }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "1c3053a1-48dc-489b-b6e2-25bee9551f66",
+      "name": "È un file?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        656,
+        848
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const doc = $input.item.json.message.document;\nreturn {\n  json: {\n    file_id: doc.file_id,\n    file_name: doc.file_name,\n    chat_id: String($input.item.json.message.chat.id)\n  }\n};"
+      },
+      "id": "e389ceab-65b3-4324-9de0-bf711bdd9e7d",
+      "name": "Prepara upload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        576
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.matteolizzo.it/storage/upload",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "273e5048-2296-4ff1-87d9-d5f9c826eec1",
+      "name": "POST /storage/upload",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1104,
+        576
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger').item.json.message.chat.id }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "5df78419-2a0e-4b1c-be13-70f7d3e11571",
+      "name": "Rispondi: upload",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1328,
+        576
+      ],
+      "webhookId": "a8738377-9e38-4de2-834a-ca300854e44c",
+      "credentials": {
+        "telegramApi": {
+          "id": "neihwSgYxE17V6BG",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "is-voice",
+              "leftValue": "={{ Object.keys($json.message).includes('voice') }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "72a98c3b-a046-4ebc-9499-ed8d266e0c45",
+      "name": "È voce?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        880,
+        944
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.telegram.org/bot8262115530:AAHF6ql9VsjQDQV1wEvdroFhLKJuAtSKXrs/getFile",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "file_id",
+              "value": "={{ $('È voce?').item.json.message.voice.file_id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "3f52681c-726e-49bc-8d61-355b138f8d55",
+      "name": "getFile (voce)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1776,
+        752
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/file/bot8262115530:AAHF6ql9VsjQDQV1wEvdroFhLKJuAtSKXrs/{{ $json.result.file_path }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "cbf767f7-d640-4e4f-8f4a-6a4380351c42",
+      "name": "Download audio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2000,
+        752
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.matteolizzo.it/command/audio",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "chat_id",
+              "value": "={{ $('Telegram Trigger').item.json.message.chat.id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1335e2c-f347-416a-a84b-c21f0b492853",
+      "name": "POST /command/audio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2224,
+        752
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return {\n  json: {\n    chat_id: String($input.item.json.message.chat.id),\n    text: $input.item.json.message.text\n  }\n};"
+      },
+      "id": "13ca2e7d-f365-4108-993a-dde9e4484e81",
+      "name": "Prepara classify",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1104,
+        1040
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.matteolizzo.it/storage/classify",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "517c7135-6448-473f-b042-c7c5bc7a9868",
+      "name": "POST /storage/classify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1328,
+        1040
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "has-classify-response",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "917b8253-f400-4596-ba19-1f112da385ce",
+      "name": "È risposta classify?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1552,
+        1040
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger').item.json.message.chat.id }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "21b29110-7f1b-4585-9771-94638812d0dd",
+      "name": "Rispondi: classify",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1776,
+        944
+      ],
+      "webhookId": "c4ffd1e3-ec83-44d2-99d4-942d1c39f370",
+      "credentials": {
+        "telegramApi": {
+          "id": "neihwSgYxE17V6BG",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "is-slash-command",
+              "leftValue": "={{ $json.message.text }}",
+              "rightValue": "/",
+              "operator": {
+                "type": "string",
+                "operation": "startsWith"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e60d8d3c-48c2-49c4-be61-913a49a04bf3",
+      "name": "È comando /?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1776,
+        1136
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const cmd = $input.item.json.message.text.toLowerCase();\nconst map = {\n  '/report': 'Dammi il report finanziario completo con saldo, entrate e uscite',\n  '/fitness': 'Dimmi il mio allenamento di oggi con gli ultimi pesi registrati per ogni esercizio',\n  '/eventi': 'Dimmi tutti i miei prossimi eventi in calendario',\n  '/saldo': 'Qual è il mio saldo attuale e quanto ho speso questa settimana?',\n  '/promemoria': 'Dimmi tutti i miei promemoria in arrivo',\n  '/peso': 'Dimmi il mio peso corporeo attuale e l\\'andamento',\n  '/help': 'Elenca tutte le cose che puoi fare per me'\n};\nconst text = map[cmd] || `Esegui questo comando: ${cmd}`;\nreturn { text, chat_id: String($input.item.json.message.chat.id) };"
+      },
+      "id": "0ddcab5f-e7e5-451a-a271-a14add6d97db",
+      "name": "Mappa comando",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2000,
+        1040
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.matteolizzo.it/command",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": {{ JSON.stringify($json.text) }},\n  \"chat_id\": {{ JSON.stringify(String($('Telegram Trigger').item.json.message.chat.id)) }}\n}",
+        "options": {}
+      },
+      "id": "2263fa2a-037a-468f-a723-529d7a059eac",
+      "name": "POST /command (comando)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2224,
+        1040
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.matteolizzo.it/command",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": {{ JSON.stringify($('Prepara classify').item.json.text) }},\n  \"chat_id\": {{ JSON.stringify(String($('Prepara classify').item.json.chat_id)) }}\n}",
+        "options": {}
+      },
+      "id": "94a38957-e7e6-4f40-8ca2-acf5d5fc8e23",
+      "name": "POST /command (testo libero)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2224,
+        1232
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const data = $input.item.json;\nlet reply = data.reply || data.answer || data.message || 'Elaborazione completata';\nif (data.transcription) {\n  reply = `🎙 _\"${data.transcription}\"_\\n\\n${reply}`;\n}\nif (data.actions && data.actions.length > 0) {\n  const actionLog = data.actions\n    .filter(a => a.result !== 'ok')\n    .map(a => `⚠️ ${a.type}: ${a.result}`)\n    .join('\\n');\n  if (actionLog) reply += `\\n\\n${actionLog}`;\n}\nreturn {\n  reply,\n  chat_id: String($('Telegram Trigger').item.json.message.chat.id)\n};"
+      },
+      "id": "e43d38ca-6140-4771-84f9-9e7d14e1ad5b",
+      "name": "Formatta risposta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2448,
+        1008
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.reply }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "df2f4846-3946-46c5-a6ba-433856992a4e",
+      "name": "Rispondi su Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2672,
+        1008
+      ],
+      "webhookId": "5be35778-6a2f-4c55-aae8-82d2279deb83",
+      "credentials": {
+        "telegramApi": {
+          "id": "neihwSgYxE17V6BG",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "gestione upload file funzionante\nNON TOCCARE TI PREGO!!!",
+        "height": 80,
+        "width": 256,
+        "color": 7
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1264,
+        464
+      ],
+      "id": "d0c30d61-f5d8-4494-93b6-6f24b39753bf",
+      "name": "Sticky Note"
+    }
+  ],
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "È un file?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "È un file?": {
+      "main": [
+        [
+          {
+            "node": "Prepara upload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "È voce?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepara upload": {
+      "main": [
+        [
+          {
+            "node": "POST /storage/upload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST /storage/upload": {
+      "main": [
+        [
+          {
+            "node": "Rispondi: upload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "È voce?": {
+      "main": [
+        [
+          {
+            "node": "getFile (voce)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepara classify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getFile (voce)": {
+      "main": [
+        [
+          {
+            "node": "Download audio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download audio": {
+      "main": [
+        [
+          {
+            "node": "POST /command/audio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST /command/audio": {
+      "main": [
+        [
+          {
+            "node": "Formatta risposta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepara classify": {
+      "main": [
+        [
+          {
+            "node": "POST /storage/classify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST /storage/classify": {
+      "main": [
+        [
+          {
+            "node": "È risposta classify?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "È risposta classify?": {
+      "main": [
+        [
+          {
+            "node": "Rispondi: classify",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "È comando /?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "È comando /?": {
+      "main": [
+        [
+          {
+            "node": "Mappa comando",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "POST /command (testo libero)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mappa comando": {
+      "main": [
+        [
+          {
+            "node": "POST /command (comando)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST /command (comando)": {
+      "main": [
+        [
+          {
+            "node": "Formatta risposta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST /command (testo libero)": {
+      "main": [
+        [
+          {
+            "node": "Formatta risposta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Formatta risposta": {
+      "main": [
+        [
+          {
+            "node": "Rispondi su Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "c958496fe4ae2d16e93ef569f488691a3e8ae30099c8894ddd403c22c5569908"
+  }
+}
