@@ -25,6 +25,7 @@ from routers.server_router  import router as server_router
 from routers.storage_router import router as storage_router
 from routers.command_router import router as command_router
 from routers.fitness_router import router as fitness_router
+from routers.realtime       import router as realtime_router
 
 
 @asynccontextmanager
@@ -66,6 +67,7 @@ app.include_router(server_router)
 app.include_router(storage_router)
 app.include_router(command_router)
 app.include_router(fitness_router)
+app.include_router(realtime_router)
 
 @app.get("/")
 def root():

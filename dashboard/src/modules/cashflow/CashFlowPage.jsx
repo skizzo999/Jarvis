@@ -18,6 +18,10 @@ export default function CashFlowPage({ onDataReady }) {
   const [form, setForm]         = useState(EMPTY_FORM);
   const [saving, setSaving]     = useState(false);
 
+  // Edit modal state
+  const [editTx, setEditTx]     = useState(null); // null | transaction object being edited
+  const [editSaving, setEditSaving] = useState(false);
+
   const fetchData = useCallback(async () => {
     setSyncing(true);
     try {
@@ -34,8 +38,21 @@ export default function CashFlowPage({ onDataReady }) {
 
   useEffect(() => {
     fetchData();
-    const id = setInterval(fetchData, 30000);
-    return () => clearInterval(id);
+    // refresh periodico di backup (caso SSE non connesso)
+    const id = setInterval(fetchData, 60000);
+    // realtime: ricarica al volo sugli eventi transazionali
+    const onTx = () => fetchData();
+    window.addEventListener("jarvis:tx.created", onTx);
+    window.addEventListener("jarvis:tx.updated", onTx);
+    window.addEventListener("jarvis:tx.deleted", onTx);
+    window.addEventListener("jarvis:record.deleted", onTx);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener("jarvis:tx.created", onTx);
+      window.removeEventListener("jarvis:tx.updated", onTx);
+      window.removeEventListener("jarvis:tx.deleted", onTx);
+      window.removeEventListener("jarvis:record.deleted", onTx);
+    };
   }, [fetchData]);
 
   const filtered = useMemo(() =>
@@ -60,6 +77,46 @@ export default function CashFlowPage({ onDataReady }) {
       await fetchData();
     } catch(e) { console.error(e); }
     finally { setSaving(false); }
+  };
+
+  const openEdit = (t) => setEditTx({
+    id:        t.id,
+    amount:    String(t.amount),
+    direction: t.direction,
+    account:   t.account || "cash",
+    category:  t.category || "",
+    note:      t.note || "",
+  });
+
+  const saveEdit = async () => {
+    if (!editTx) return;
+    const amount = parseFloat(editTx.amount);
+    if (!amount || amount <= 0) return;
+    setEditSaving(true);
+    try {
+      await axios.put(`${API_URL}/transactions/${editTx.id}`, {
+        amount,
+        direction: editTx.direction,
+        account:   editTx.account,
+        category:  editTx.category || "manuale",
+        note:      editTx.note,
+      });
+      setEditTx(null);
+      await fetchData();
+    } catch(e) { console.error(e); alert("Errore salvataggio"); }
+    finally { setEditSaving(false); }
+  };
+
+  const deleteEdit = async () => {
+    if (!editTx) return;
+    if (!confirm("Eliminare definitivamente questa transazione?")) return;
+    setEditSaving(true);
+    try {
+      await axios.delete(`${API_URL}/transactions/${editTx.id}`);
+      setEditTx(null);
+      await fetchData();
+    } catch(e) { console.error(e); alert("Errore eliminazione"); }
+    finally { setEditSaving(false); }
   };
 
   const periods = ["today","week","month"];
@@ -231,10 +288,17 @@ export default function CashFlowPage({ onDataReady }) {
             <span style={{ fontSize:13, color:"var(--muted)", fontFamily:"var(--font)" }}>Nessuna transazione</span>
           </div>
         ) : filtered.map((t, i) => (
-          <div key={t.id} style={{
-            display:"flex", alignItems:"center", gap:12, padding:"12px 4px",
-            borderBottom: i < filtered.length-1 ? "1px solid rgba(255,255,255,0.04)" : "none",
-          }}>
+          <div key={t.id}
+            onClick={() => openEdit(t)}
+            title="Modifica transazione"
+            style={{
+              display:"flex", alignItems:"center", gap:12, padding:"12px 4px",
+              borderBottom: i < filtered.length-1 ? "1px solid rgba(255,255,255,0.04)" : "none",
+              cursor:"pointer", transition:"background 0.15s",
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.02)"}
+            onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+          >
             <div style={{
               width:7, height:7, borderRadius:"50%", flexShrink:0,
               background: t.direction==="+" ? "var(--green)" : "var(--red)",
@@ -256,9 +320,163 @@ export default function CashFlowPage({ onDataReady }) {
             <div style={{ fontSize:14, fontWeight:600, fontFamily:"var(--font)", flexShrink:0, color: t.direction==="+" ? "var(--green)" : "var(--text)" }}>
               {t.direction==="+" ? "+" : "−"}€{Number(t.amount).toFixed(2)}
             </div>
+            <span style={{ fontSize:11, color:"var(--muted)", opacity:0.4, fontFamily:"var(--font)" }}>✎</span>
           </div>
         ))}
       </div>
+
+      {/* Modale edit transazione */}
+      {editTx && (
+        <div
+          onClick={() => !editSaving && setEditTx(null)}
+          style={{
+            position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", backdropFilter:"blur(6px)",
+            display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000, padding:20,
+          }}>
+          <div
+            onClick={e => e.stopPropagation()}
+            className="glass"
+            style={{ width:"min(460px, 95vw)", padding:22, display:"flex", flexDirection:"column", gap:14 }}>
+
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+              <div style={{ fontSize:14, fontWeight:600, color:"var(--text)", fontFamily:"var(--font)" }}>
+                Modifica transazione
+              </div>
+              <button onClick={() => setEditTx(null)}
+                style={{ background:"transparent", border:"none", color:"var(--muted)", fontSize:18, cursor:"pointer", padding:"0 4px", lineHeight:1 }}>
+                ✕
+              </button>
+            </div>
+
+            {/* Importo + tipo */}
+            <div style={{ display:"flex", gap:8 }}>
+              <div style={{ flex:1, display:"flex", flexDirection:"column", gap:4 }}>
+                <label style={{ fontSize:10, color:"var(--muted)", fontFamily:"var(--font)" }}>Importo (€)</label>
+                <input
+                  type="number" step="0.01" min="0"
+                  value={editTx.amount}
+                  onChange={e => setEditTx({ ...editTx, amount: e.target.value })}
+                  style={{
+                    background:"rgba(255,255,255,0.05)", border:"1px solid rgba(255,255,255,0.1)",
+                    borderRadius:8, padding:"8px 10px", color:"var(--text)",
+                    fontSize:13, fontFamily:"var(--font)", outline:"none",
+                  }}/>
+              </div>
+              <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                <label style={{ fontSize:10, color:"var(--muted)", fontFamily:"var(--font)" }}>Tipo</label>
+                <div style={{ display:"flex", gap:4 }}>
+                  {[
+                    { v:"-", label:"Spesa", color:"var(--red)" },
+                    { v:"+", label:"Entrata", color:"var(--green)" },
+                  ].map(o => (
+                    <button key={o.v}
+                      onClick={() => setEditTx({ ...editTx, direction: o.v })}
+                      style={{
+                        background: editTx.direction === o.v ? `${o.color}22` : "rgba(255,255,255,0.04)",
+                        border: `1px solid ${editTx.direction === o.v ? o.color : "rgba(255,255,255,0.1)"}`,
+                        borderRadius:8, padding:"8px 12px",
+                        color: editTx.direction === o.v ? o.color : "var(--muted)",
+                        fontSize:11, fontWeight:600, cursor:"pointer", fontFamily:"var(--font)",
+                      }}>
+                      {o.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Account */}
+            <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+              <label style={{ fontSize:10, color:"var(--muted)", fontFamily:"var(--font)" }}>Account</label>
+              <div style={{ display:"flex", gap:6 }}>
+                {["cash", "revolut"].map(acc => (
+                  <button key={acc}
+                    onClick={() => setEditTx({ ...editTx, account: acc })}
+                    style={{
+                      flex:1,
+                      background: editTx.account === acc ? `${ACCOUNT_COLOR[acc]}22` : "rgba(255,255,255,0.04)",
+                      border: `1px solid ${editTx.account === acc ? ACCOUNT_COLOR[acc] : "rgba(255,255,255,0.1)"}`,
+                      borderRadius:8, padding:"8px 12px",
+                      color: editTx.account === acc ? ACCOUNT_COLOR[acc] : "var(--muted)",
+                      fontSize:11, fontWeight:600, cursor:"pointer", fontFamily:"var(--font)",
+                      display:"flex", alignItems:"center", justifyContent:"center", gap:6,
+                    }}>
+                    <span>{ACCOUNT_ICON[acc]}</span>
+                    {acc === "cash" ? "Cash" : "Revolut"}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Categoria */}
+            <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+              <label style={{ fontSize:10, color:"var(--muted)", fontFamily:"var(--font)" }}>Categoria</label>
+              <input
+                type="text" placeholder="es. spesa, cena, stipendio..."
+                value={editTx.category}
+                onChange={e => setEditTx({ ...editTx, category: e.target.value })}
+                style={{
+                  background:"rgba(255,255,255,0.05)", border:"1px solid rgba(255,255,255,0.1)",
+                  borderRadius:8, padding:"8px 10px", color:"var(--text)",
+                  fontSize:12, fontFamily:"var(--font)", outline:"none",
+                }}/>
+            </div>
+
+            {/* Nota */}
+            <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+              <label style={{ fontSize:10, color:"var(--muted)", fontFamily:"var(--font)" }}>Nota</label>
+              <input
+                type="text" placeholder="(opzionale)"
+                value={editTx.note}
+                onChange={e => setEditTx({ ...editTx, note: e.target.value })}
+                style={{
+                  background:"rgba(255,255,255,0.05)", border:"1px solid rgba(255,255,255,0.1)",
+                  borderRadius:8, padding:"8px 10px", color:"var(--text)",
+                  fontSize:12, fontFamily:"var(--font)", outline:"none",
+                }}/>
+            </div>
+
+            {/* Azioni */}
+            <div style={{ display:"flex", gap:8, justifyContent:"space-between", marginTop:4 }}>
+              <button
+                onClick={deleteEdit}
+                disabled={editSaving}
+                style={{
+                  background:"rgba(248,113,113,0.10)", border:"1px solid rgba(248,113,113,0.3)",
+                  borderRadius:8, padding:"8px 14px", color:"#f87171",
+                  fontSize:11, fontWeight:600, cursor:"pointer", fontFamily:"var(--font)",
+                  opacity: editSaving ? 0.5 : 1,
+                }}>
+                🗑 Elimina
+              </button>
+              <div style={{ display:"flex", gap:8 }}>
+                <button
+                  onClick={() => setEditTx(null)}
+                  disabled={editSaving}
+                  style={{
+                    background:"rgba(255,255,255,0.05)", border:"1px solid rgba(255,255,255,0.1)",
+                    borderRadius:8, padding:"8px 14px", color:"var(--muted)",
+                    fontSize:11, cursor:"pointer", fontFamily:"var(--font)",
+                  }}>
+                  Annulla
+                </button>
+                <button
+                  onClick={saveEdit}
+                  disabled={editSaving || !parseFloat(editTx.amount)}
+                  style={{
+                    background:"rgba(129,140,248,0.2)", border:"1px solid rgba(129,140,248,0.4)",
+                    borderRadius:8, padding:"8px 16px", color:"var(--cashflow-accent)",
+                    fontSize:11, fontWeight:600, cursor:"pointer", fontFamily:"var(--font)",
+                    opacity: editSaving ? 0.5 : 1,
+                  }}>
+                  {editSaving ? "…" : "Salva"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

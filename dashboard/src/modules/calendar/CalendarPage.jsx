@@ -18,7 +18,18 @@ export default function CalendarPage() {
     finally { setLoading(false); }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    const on = () => load();
+    window.addEventListener("jarvis:event.created", on);
+    window.addEventListener("jarvis:event.deleted", on);
+    window.addEventListener("jarvis:reminder.created", on);
+    return () => {
+      window.removeEventListener("jarvis:event.created", on);
+      window.removeEventListener("jarvis:event.deleted", on);
+      window.removeEventListener("jarvis:reminder.created", on);
+    };
+  }, []);
 
   const deleteEvent = async (uid) => {
     try {

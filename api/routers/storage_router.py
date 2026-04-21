@@ -18,6 +18,7 @@ from config import (
     TELEGRAM_CHAT_ID,
 )
 from security import limiter
+from routers.realtime import publish
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
 
@@ -193,6 +194,7 @@ async def upload_from_telegram(data: UploadRequest):
     with open(local_path, "wb") as f:
         f.write(r.content)
     logger.info("file salvato in inbox: %s (%.1f KB)", data.file_name, len(r.content) / 1024)
+    publish("storage.changed", {"action": "upload", "filename": data.file_name, "folder": "inbox"})
 
     # 4. Registra come pending (per il timeout). Schema gestito da init_schema in startup.
     conn = get_db()
@@ -257,6 +259,7 @@ def classify_pending(req: ClassifyRequest):
     os.makedirs(dest_dir, exist_ok=True)
     shutil.move(source, dest)
     logger.info("file classificato: %s → %s", filename, target)
+    publish("storage.changed", {"action": "classify", "filename": filename, "folder": target})
 
     # 🧹 Pulisci pending
     cur.execute("DELETE FROM pending_files WHERE chat_id = ?", (req.chat_id,))
@@ -341,6 +344,7 @@ def move_file(req: MoveRequest):
 
     shutil.move(src, dest_path)
     logger.info("file spostato: %s → %s", filename, req.dest_folder)
+    publish("storage.changed", {"action": "move", "filename": filename})
     return {"status": "ok", "filename": filename, "destination": req.dest_folder}
 
 
@@ -357,6 +361,7 @@ def delete_file(req: DeleteRequest):
     filename = os.path.basename(full)
     os.remove(full)
     logger.info("file eliminato: %s", req.path)
+    publish("storage.changed", {"action": "delete", "filename": filename})
     return {"status": "ok", "filename": filename}
 
 
@@ -387,4 +392,5 @@ async def upload_web(
         f.write(content)
 
     logger.info("upload web: %s → %s (%.1f KB)", safe_name, folder, len(content) / 1024)
+    publish("storage.changed", {"action": "upload", "filename": safe_name, "folder": folder})
     return {"status": "ok", "filename": safe_name, "folder": folder, "size_kb": round(len(content)/1024, 1)}

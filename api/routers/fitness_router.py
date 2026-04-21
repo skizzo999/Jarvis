@@ -6,6 +6,7 @@ from datetime import datetime, date
 import sqlite3
 
 from config import DB_PATH
+from routers.realtime import publish
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/fitness", tags=["fitness"])
@@ -31,6 +32,7 @@ def log_workout(body: WorkoutLogIn) -> dict:
         (body.exercise.lower().strip(), body.weight_kg, body.reps, body.sets, body.notes, datetime.now().isoformat()))
     con.commit(); con.close()
     logger.info("workout logged: %s %.1fkg", body.exercise, body.weight_kg)
+    publish("fitness.workout", {"exercise": body.exercise, "weight_kg": body.weight_kg})
     return {"status": "ok", "exercise": body.exercise, "weight_kg": body.weight_kg}
 
 @router.get("/last")
@@ -55,6 +57,7 @@ def delete_log(log_id: int) -> dict:
     cur.execute("DELETE FROM workout_logs WHERE id=?", (log_id,))
     if cur.rowcount == 0: con.close(); raise HTTPException(404, "Log non trovato")
     con.commit(); con.close()
+    publish("fitness.workout", {"deleted": log_id})
     return {"status": "ok"}
 
 # ── BODY WEIGHT ───────────────────────────────────────────────────────────────
@@ -68,6 +71,7 @@ def log_body_weight(body: BodyWeightIn) -> dict:
     cur.execute("INSERT INTO body_weight (weight_kg,logged_at) VALUES (?,?)",
         (body.weight_kg, datetime.now().isoformat()))
     con.commit(); con.close()
+    publish("fitness.weight", {"kg": body.weight_kg})
     return {"status": "ok", "weight_kg": body.weight_kg}
 
 @router.get("/weight/history")
@@ -117,6 +121,7 @@ def log_meal(body: MealIn) -> dict:
     cur.execute("INSERT INTO meals (logged_at,description,kcal,protein,carbs,fat,note) VALUES (?,?,?,?,?,?,?)",
         (datetime.now().isoformat(), body.description, body.kcal, body.protein, body.carbs, body.fat, body.note))
     con.commit(); con.close()
+    publish("fitness.meal", {"kcal": body.kcal})
     return {"status": "ok"}
 
 @router.get("/meals/today")
@@ -141,4 +146,5 @@ def delete_meal(meal_id: int) -> dict:
     cur.execute("DELETE FROM meals WHERE id=?", (meal_id,))
     if cur.rowcount == 0: con.close(); raise HTTPException(404, "Pasto non trovato")
     con.commit(); con.close()
+    publish("fitness.meal", {"deleted": meal_id})
     return {"status": "ok"}

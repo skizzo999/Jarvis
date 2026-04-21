@@ -7,6 +7,7 @@ import sqlite3, requests, re
 from requests.auth import HTTPBasicAuth
 
 from config import DB_PATH, RADICALE_PASS, RADICALE_URL, RADICALE_USER
+from routers.realtime import publish
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/events", tags=["events"])
@@ -144,6 +145,7 @@ def delete_event(uid: str):
 
     if r.status_code in [200, 204]:
         logger.info("evento eliminato uid=%s", uid)
+        publish("event.deleted", {"uid": uid})
         return {"status": "ok", "uid": uid}
     elif r.status_code == 404:
         raise HTTPException(status_code=404, detail="Event not found")
@@ -179,6 +181,7 @@ END:VCALENDAR"""
         logger.error("Radicale PUT error uid=%s status=%d", uid, r.status_code)
         raise HTTPException(status_code=500, detail=f"Radicale error: {r.status_code}")
     logger.info("evento creato uid=%s title=%s", uid, event.title)
+    publish("event.created", {"uid": uid, "title": event.title})
     return {"status": "ok", "uid": uid, "title": event.title, "start": event.start}
 
 @router.post("/reminders")
@@ -189,6 +192,7 @@ def create_reminder(reminder: ReminderIn):
                 (reminder.title, reminder.remind_at.isoformat()))
     con.commit()
     con.close()
+    publish("reminder.created", {"title": reminder.title})
     return {"status": "ok", "title": reminder.title, "remind_at": reminder.remind_at}
 
 @router.get("/reminders/pending")

@@ -36,6 +36,10 @@ def _extract_key(request: Request) -> str | None:
     auth = request.headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
         return auth[7:].strip()
+    # Query param fallback per client che non possono settare header (es. EventSource SSE)
+    q_key = request.query_params.get("key")
+    if q_key:
+        return q_key.strip()
     return None
 
 

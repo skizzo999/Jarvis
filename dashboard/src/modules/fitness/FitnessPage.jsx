@@ -142,7 +142,7 @@ export default function FitnessPage() {
   const todayWorkout = getTodayWorkout();
   const targets = { kcal:2330, protein:160, carbs:265, fat:70 };
 
-  useEffect(() => {
+  const fetchFitness = React.useCallback(() => {
     fetch(`${API_URL}/fitness/last`)
       .then(r => r.json())
       .then(data => {
@@ -161,6 +161,21 @@ export default function FitnessPage() {
       .then(data => setMacros(data.totals || { kcal:0, protein:0, carbs:0, fat:0 }))
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    fetchFitness();
+    const on = () => fetchFitness();
+    window.addEventListener("jarvis:fitness.workout", on);
+    window.addEventListener("jarvis:fitness.weight", on);
+    window.addEventListener("jarvis:fitness.meal", on);
+    window.addEventListener("jarvis:record.deleted", on);
+    return () => {
+      window.removeEventListener("jarvis:fitness.workout", on);
+      window.removeEventListener("jarvis:fitness.weight", on);
+      window.removeEventListener("jarvis:fitness.meal", on);
+      window.removeEventListener("jarvis:record.deleted", on);
+    };
+  }, [fetchFitness]);
 
   useEffect(() => {
     fetch(`${API_URL}/fitness/history/${encodeURIComponent(selectedEx)}?limit=20`)

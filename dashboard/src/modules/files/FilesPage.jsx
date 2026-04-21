@@ -252,7 +252,12 @@ export default function FilesPage() {
       .catch(() => { setTree([]); setLoading(false); });
   };
 
-  useEffect(() => { refreshTree(); }, []);
+  useEffect(() => {
+    refreshTree();
+    const on = () => refreshTree();
+    window.addEventListener("jarvis:storage.changed", on);
+    return () => window.removeEventListener("jarvis:storage.changed", on);
+  }, []);
 
   const toggleFolder = path => setOpen(o => ({ ...o, [path]: !o[path] }));
 

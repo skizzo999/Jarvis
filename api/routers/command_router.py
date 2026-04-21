@@ -442,12 +442,38 @@ def execute_action(action: dict) -> str:
                     requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument",
                         data={"chat_id": chat_id}, files={"document": f})
         elif t == "delete_record":
-            return execute_delete(params)  # ← AGGIUNTO: chiamata alla funzione di eliminazione
+            result = execute_delete(params)
+            _emit_for_action(t, params)
+            return result
+        _emit_for_action(t, params)
         return "ok"
     except Exception as e:
         return f"errore: {e}"
     finally:
         con.close()
+
+
+# Mappa action type → realtime event type per il fan-out SSE
+_ACTION_EVENT_MAP = {
+    "add_transaction":   "tx.created",
+    "log_workout":       "fitness.workout",
+    "log_body_weight":   "fitness.weight",
+    "log_meal":          "fitness.meal",
+    "add_food":          "fitness.food",
+    "set_reminder":      "reminder.created",
+    "add_event":         "event.created",
+    "delete_event":      "event.deleted",
+    "delete_record":     "record.deleted",
+}
+
+def _emit_for_action(action_type: str, params: dict):
+    evt = _ACTION_EVENT_MAP.get(action_type)
+    if evt:
+        try:
+            from routers.realtime import publish
+            publish(evt, {"source": "command", "params": params})
+        except Exception:
+            pass  # l'emit non deve rompere il comando
 
 # ── HISTORY (per-chat) ────────────────────────────────────────────────────────
 
