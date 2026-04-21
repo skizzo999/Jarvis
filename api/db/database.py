@@ -1,12 +1,14 @@
 import sqlite3
 from contextlib import contextmanager
 
-DB_PATH = "/home/matteo/Jarvis/data/jarvis.db"
+from config import DB_PATH
+
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
 
 @contextmanager
 def db_connection():
@@ -18,16 +20,9 @@ def db_connection():
     finally:
         conn.close()
 
+
 def init_db():
-    with db_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS transactions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at TEXT NOT NULL,
-                amount REAL NOT NULL,
-                direction TEXT NOT NULL,
-                category TEXT,
-                note TEXT
-            )
-        """)
-        conn.commit()
+    """Legacy shim — lo schema è ora gestito da `db.schema.init_schema()`,
+    chiamato una volta sola allo startup dell'app in main.py."""
+    from db.schema import init_schema
+    init_schema()

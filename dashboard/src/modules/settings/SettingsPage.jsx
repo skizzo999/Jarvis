@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { getApiKey, setApiKey } from "../../api.js";
 
 const API_URL = "/api";
 
@@ -40,6 +41,14 @@ function StatusDot({ ok }) {
 export default function SettingsPage() {
   const [health, setHealth] = useState(null);
   const [loadingHealth, setLoadingHealth] = useState(true);
+  const [apiKeyDraft, setApiKeyDraft] = useState(getApiKey());
+  const [apiKeySaved, setApiKeySaved] = useState(false);
+
+  const handleSaveKey = () => {
+    setApiKey(apiKeyDraft.trim());
+    setApiKeySaved(true);
+    setTimeout(() => setApiKeySaved(false), 2000);
+  };
 
   const fetchHealth = async () => {
     setLoadingHealth(true);
@@ -142,6 +151,10 @@ export default function SettingsPage() {
         ))}
       </Section>
 
+      {/* Promemoria attivi */}
+      <RemindersPanel />
+
+
       {/* Scheda allenamento */}
       <Section title="Rotazione scheda">
         <Row label="Data inizio ciclo" value="07/04/2026" />
@@ -162,6 +175,39 @@ export default function SettingsPage() {
         <Row label="Timeout classificazione" value="5 secondi" />
       </Section>
 
+      {/* API Key (opzionale) */}
+      <Section title="Autenticazione API">
+        <div style={{ fontSize: 11, color: "var(--muted)", fontFamily: "var(--font)", lineHeight: 1.5 }}>
+          Se il backend ha <code style={{ color: ACCENT }}>JARVIS_API_KEY</code> configurato, incolla qui la stessa chiave.
+          Salvata solo nel tuo browser (localStorage). Lascia vuoto se l'auth è disabilitata.
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input
+            type="password"
+            value={apiKeyDraft}
+            onChange={(e) => setApiKeyDraft(e.target.value)}
+            placeholder="API key (vuoto = disabilitata)"
+            style={{
+              flex: 1, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: 8, padding: "7px 10px", color: "var(--text)", fontSize: 11,
+              fontFamily: "monospace", outline: "none",
+            }}
+          />
+          <button
+            onClick={handleSaveKey}
+            style={{
+              background: apiKeySaved ? "rgba(52,211,153,0.15)" : "rgba(167,139,250,0.12)",
+              border: `1px solid ${apiKeySaved ? "rgba(52,211,153,0.3)" : "rgba(167,139,250,0.25)"}`,
+              borderRadius: 8, padding: "7px 14px",
+              color: apiKeySaved ? "#34d399" : ACCENT,
+              fontSize: 11, fontFamily: "var(--font)", cursor: "pointer",
+            }}
+          >
+            {apiKeySaved ? "✓ Salvata" : "Salva"}
+          </button>
+        </div>
+      </Section>
+
       {/* Info */}
       <Section title="Informazioni">
         <Row label="Modello AI" value="Claude Haiku 4.5" />
@@ -171,5 +217,45 @@ export default function SettingsPage() {
       </Section>
 
     </div>
+  );
+}
+
+function RemindersPanel() {
+  const [reminders, setReminders] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await fetch(`${API_URL}/events/reminders/pending`);
+      if (r.ok) setReminders(await r.json());
+    } catch { /* silent */ }
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => { void load(); }, []);
+
+  return (
+    <Section title="Promemoria in attesa">
+      {loading ? (
+        <div style={{ fontSize: 12, color: "var(--muted)", fontFamily: "var(--font)" }}>Caricamento...</div>
+      ) : reminders.length === 0 ? (
+        <div style={{ fontSize: 12, color: "var(--muted)", fontFamily: "var(--font)" }}>Nessun promemoria attivo.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {reminders.map(r => (
+            <div key={r.id} style={{
+              display: "flex", justifyContent: "space-between", alignItems: "center",
+              padding: "7px 10px", background: "rgba(255,255,255,0.03)", borderRadius: 8,
+            }}>
+              <span style={{ fontSize: 11, color: "var(--text)", fontFamily: "var(--font)" }}>{r.title}</span>
+              <span style={{ fontSize: 10, color: "var(--muted)", fontFamily: "var(--font)" }}>
+                {r.remind_at?.replace("T", " ").slice(0, 16)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Section>
   );
 }

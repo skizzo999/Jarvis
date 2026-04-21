@@ -1,24 +1,32 @@
 import logging
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Request
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 import os, requests, anthropic
-from dotenv import load_dotenv
 import sqlite3
 import shutil
 from datetime import datetime, timedelta
 
+from config import (
+    ANTHROPIC_API_KEY,
+    CLAUDE_MODEL,
+    DB_PATH,
+    STORAGE_ROOT as _STORAGE_ROOT,
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHAT_ID,
+)
+from security import limiter
+
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
+
 logger = logging.getLogger(__name__)
 
-load_dotenv(dotenv_path="/home/matteo/Jarvis/api/.env")
-
 router = APIRouter(prefix="/storage", tags=["storage"])
-STORAGE_ROOT = "/home/matteo/Jarvis/storage"
-DB_PATH = "/home/matteo/Jarvis/data/jarvis.db"
-ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-MODEL = "claude-haiku-4-5-20251001"
+STORAGE_ROOT = str(_STORAGE_ROOT)
+ANTHROPIC_KEY = ANTHROPIC_API_KEY
+MODEL = CLAUDE_MODEL
 
 SCHOOL_SUBJECTS = {
     'informatica': 'scuola/informatica', 'info': 'scuola/informatica',
@@ -89,20 +97,27 @@ def extract_text(full_path: str) -> str:
 
 # ========== MODELS ==========
 class SendRequest(BaseModel):
-    path: str
+    path: str = Field(..., max_length=500)
 
-class UploadRequest(BaseModel):  # ← SENZA DECORATORE!
-    file_id: str
-    file_name: str
-    chat_id: str
+class UploadRequest(BaseModel):
+    file_id: str = Field(..., max_length=200)
+    file_name: str = Field(..., max_length=255)
+    chat_id: str = Field(..., max_length=50)
 
 class AnalyzeRequest(BaseModel):
-    path: str
-    question: Optional[str] = None
+    path: str = Field(..., max_length=500)
+    question: Optional[str] = Field(None, max_length=1000)
 
-class ClassifyRequest(BaseModel):  # ← MANCAVA QUESTA DEFINIZIONE
-    chat_id: str
-    text: str
+class ClassifyRequest(BaseModel):
+    chat_id: str = Field(..., max_length=50)
+    text: str = Field(..., max_length=200)
+
+class MoveRequest(BaseModel):
+    path: str = Field(..., max_length=500)
+    dest_folder: str = Field(..., max_length=300)
+
+class DeleteRequest(BaseModel):
+    path: str = Field(..., max_length=500)
 
 # ========== ENDPOINTS ==========
 
@@ -113,13 +128,18 @@ def list_files():
     return build_tree(STORAGE_ROOT)
 
 @router.get("/download")
-def download_file(path: str):
+def download_file(path: str, inline: int = 0):
     full = os.path.realpath(os.path.join(STORAGE_ROOT, path))
     if not full.startswith(os.path.realpath(STORAGE_ROOT)):
         raise HTTPException(400, "Percorso non valido")
     if not os.path.isfile(full):
         raise HTTPException(404, "File non trovato")
-    return FileResponse(full, filename=os.path.basename(full))
+    disposition = "inline" if inline else "attachment"
+    return FileResponse(
+        full,
+        filename=os.path.basename(full),
+        content_disposition_type=disposition,
+    )
 
 @router.post("/send-telegram")
 def send_telegram(req: SendRequest):
@@ -128,13 +148,11 @@ def send_telegram(req: SendRequest):
         raise HTTPException(400, "Percorso non valido")
     if not os.path.isfile(full):
         raise HTTPException(404, "File non trovato")
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "8330494963")
-    if not token:
+    if not TELEGRAM_BOT_TOKEN:
         raise HTTPException(500, "TELEGRAM_BOT_TOKEN non configurato")
     with open(full, "rb") as f:
-        r = requests.post(f"https://api.telegram.org/bot{token}/sendDocument",
-            data={"chat_id": chat_id}, files={"document": (os.path.basename(full), f)}, timeout=30)
+        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument",
+            data={"chat_id": TELEGRAM_CHAT_ID}, files={"document": (os.path.basename(full), f)}, timeout=30)
     if not r.ok:
         raise HTTPException(500, f"Errore Telegram: {r.text}")
     return {"status": "ok", "filename": os.path.basename(full)}
@@ -146,24 +164,23 @@ async def upload_from_telegram(data: UploadRequest):
     Registra il file come 'pending' per il timeout di 5s.
     Chiamato da n8n.
     """
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    if not token:
+    if not TELEGRAM_BOT_TOKEN:
         raise HTTPException(500, "TELEGRAM_BOT_TOKEN non configurato")
-    
+
     # 1. Ottieni file_path da Telegram
     r = requests.get(
-        f"https://api.telegram.org/bot{token}/getFile?file_id={data.file_id}",
+        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile?file_id={data.file_id}",
         timeout=10
     )
     if not r.ok:
         raise HTTPException(400, f"Errore Telegram API: {r.text}")
-    
+
     file_path = r.json().get("result", {}).get("file_path")
     if not file_path:
         raise HTTPException(400, "file_path non trovato")
-    
+
     # 2. Download del file
-    download_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
+    download_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
     r = requests.get(download_url, timeout=30)
     if not r.ok:
         raise HTTPException(400, f"Impossibile scaricare: {r.text}")
@@ -177,16 +194,8 @@ async def upload_from_telegram(data: UploadRequest):
         f.write(r.content)
     logger.info("file salvato in inbox: %s (%.1f KB)", data.file_name, len(r.content) / 1024)
 
-    # 4. Registra come pending (per il timeout)
+    # 4. Registra come pending (per il timeout). Schema gestito da init_schema in startup.
     conn = get_db()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS pending_files (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id TEXT NOT NULL,
-            filename TEXT NOT NULL,
-            upload_time TEXT NOT NULL
-        )
-    """)
     conn.execute(
         "INSERT INTO pending_files (chat_id, filename, upload_time) VALUES (?, ?, ?)",
         (data.chat_id, data.file_name, datetime.now().isoformat())
@@ -262,7 +271,8 @@ def classify_pending(req: ClassifyRequest):
     }
 
 @router.post("/analyze")
-def analyze_file(req: AnalyzeRequest):
+@limiter.limit("20/minute")
+def analyze_file(request: Request, req: AnalyzeRequest):
     """Analizza un file con Claude. Se question è None, genera un riassunto."""
     if not ANTHROPIC_KEY:
         raise HTTPException(500, "ANTHROPIC_API_KEY non configurata")
@@ -282,7 +292,18 @@ def analyze_file(req: AnalyzeRequest):
         max_tokens=600,
         system=(
             "Sei Jarvis, assistente di Matteo. Analizza il documento fornito e rispondi in modo preciso e diretto. "
-            "Italiano. Niente intro generiche. Vai subito al punto. Usa markdown minimale se utile."
+            "Italiano. Niente intro generiche. Vai subito al punto.\n\n"
+            "Usa questa sintassi markdown per strutturare la risposta:\n"
+            "- `# Titolo`, `## Sottotitolo`, `### Sezione` per le intestazioni\n"
+            "- `**grassetto**` per termini chiave\n"
+            "- `*corsivo*` per enfasi leggera\n"
+            "- `==evidenziato==` per concetti fondamentali da ricordare\n"
+            "- `++sottolineato++` per definizioni importanti\n"
+            "- `~~barrato~~` per errori da evitare\n"
+            "- `` `codice` `` per termini tecnici o variabili\n"
+            "- `- ` per liste\n"
+            "- `---` per separare sezioni\n"
+            "Usa queste evidenziazioni con parsimonia — devono aiutare a memorizzare, non distrarre."
         ),
         messages=[{
             "role": "user",
@@ -298,25 +319,70 @@ def analyze_file(req: AnalyzeRequest):
         "chars_analyzed": len(text),
     }
 
+@router.post("/move")
+def move_file(req: MoveRequest):
+    """Sposta un file in un'altra cartella dentro STORAGE_ROOT."""
+    safe_base = os.path.realpath(STORAGE_ROOT)
+    src = os.path.realpath(os.path.join(STORAGE_ROOT, req.path))
+    if not src.startswith(safe_base + os.sep) and src != safe_base:
+        raise HTTPException(400, "Percorso sorgente non valido")
+    if not os.path.isfile(src):
+        raise HTTPException(404, "File non trovato")
+
+    dest_dir = os.path.realpath(os.path.join(STORAGE_ROOT, req.dest_folder))
+    if not (dest_dir == safe_base or dest_dir.startswith(safe_base + os.sep)):
+        raise HTTPException(400, "Cartella destinazione non valida")
+
+    os.makedirs(dest_dir, exist_ok=True)
+    filename = os.path.basename(src)
+    dest_path = os.path.join(dest_dir, filename)
+    if os.path.exists(dest_path):
+        raise HTTPException(409, f"'{filename}' esiste già in {req.dest_folder}")
+
+    shutil.move(src, dest_path)
+    logger.info("file spostato: %s → %s", filename, req.dest_folder)
+    return {"status": "ok", "filename": filename, "destination": req.dest_folder}
+
+
+@router.post("/delete")
+def delete_file(req: DeleteRequest):
+    """Elimina un file dallo storage."""
+    safe_base = os.path.realpath(STORAGE_ROOT)
+    full = os.path.realpath(os.path.join(STORAGE_ROOT, req.path))
+    if not full.startswith(safe_base + os.sep):
+        raise HTTPException(400, "Percorso non valido")
+    if not os.path.isfile(full):
+        raise HTTPException(404, "File non trovato")
+
+    filename = os.path.basename(full)
+    os.remove(full)
+    logger.info("file eliminato: %s", req.path)
+    return {"status": "ok", "filename": filename}
+
+
 @router.post("/upload-web")
+@limiter.limit("30/minute")
 async def upload_web(
+    request: Request,
     file: UploadFile = File(...),
     folder: str = Form("inbox"),
 ):
     """Upload diretto dal browser. Salva in STORAGE_ROOT/{folder}/."""
     safe_base = os.path.realpath(STORAGE_ROOT)
     dest_dir  = os.path.realpath(os.path.join(STORAGE_ROOT, folder))
-    if not dest_dir.startswith(safe_base + os.sep) and dest_dir != safe_base:
+    if not (dest_dir == safe_base or dest_dir.startswith(safe_base + os.sep)):
         raise HTTPException(400, "Cartella non valida")
 
     safe_name = os.path.basename(file.filename or "upload")
     if not safe_name:
         raise HTTPException(400, "Nome file non valido")
 
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"File troppo grande (max {MAX_UPLOAD_BYTES // (1024*1024)} MB)")
+
     os.makedirs(dest_dir, exist_ok=True)
     dest_path = os.path.join(dest_dir, safe_name)
-
-    content = await file.read()
     with open(dest_path, "wb") as f:
         f.write(content)
 

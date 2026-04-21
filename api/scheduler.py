@@ -3,23 +3,23 @@
 Jarvis Scheduler — Modulo 5
 Notifiche proattive: briefing mattutino (07:00) + resoconto serale (23:00) + reminder checker (ogni minuto)
 """
-import os, logging, requests
+import logging, os, requests
 from datetime import datetime
-from dotenv import load_dotenv
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-load_dotenv(dotenv_path="/home/matteo/Jarvis/.env")
+from config import API_BASE, API_KEY, LOGS_DIR, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
-TELEGRAM_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "8330494963")
-API_BASE         = "http://localhost:8000"
+_AUTH_HEADERS = {"X-API-Key": API_KEY} if API_KEY else {}
 
+TELEGRAM_TOKEN = TELEGRAM_BOT_TOKEN
+
+os.makedirs(LOGS_DIR, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler("/home/matteo/Jarvis/logs/scheduler.log"),
+        logging.FileHandler(str(LOGS_DIR / "scheduler.log")),
         logging.StreamHandler(),
     ]
 )
@@ -49,7 +49,8 @@ def call_report(prompt: str) -> str:
         r = requests.post(
             f"{API_BASE}/command/report",
             json={"text": prompt, "chat_id": TELEGRAM_CHAT_ID},
-            timeout=30
+            headers=_AUTH_HEADERS,
+            timeout=30,
         )
         r.raise_for_status()
         return r.json().get("reply", "Errore: risposta vuota")
@@ -87,22 +88,19 @@ def evening_recap():
 def check_reminders():
     """Ogni minuto — controlla i promemoria in scadenza e li invia."""
     try:
-        r = requests.get(f"{API_BASE}/events/reminders/pending", timeout=5)
+        r = requests.get(f"{API_BASE}/events/reminders/pending", headers=_AUTH_HEADERS, timeout=5)
         if r.status_code != 200:
             return
         reminders = r.json()
         for rem in reminders:
             log.info(f"⏰ Promemoria: {rem['title']}")
             send_telegram(f"⏰ *Promemoria:* {rem['title']}")
-            requests.post(f"{API_BASE}/events/reminders/{rem['id']}/sent", timeout=5)
+            requests.post(f"{API_BASE}/events/reminders/{rem['id']}/sent", headers=_AUTH_HEADERS, timeout=5)
     except Exception as e:
         log.debug(f"check_reminders: {e}")
 
 
 if __name__ == "__main__":
-    # Crea cartella logs se non esiste
-    os.makedirs("/home/matteo/Jarvis/logs", exist_ok=True)
-
     scheduler = BlockingScheduler(timezone="Europe/Rome")
 
     scheduler.add_job(morning_briefing, CronTrigger(hour=7, minute=0, timezone="Europe/Rome"), id="morning")

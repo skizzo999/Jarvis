@@ -1,26 +1,39 @@
-from fastapi import APIRouter
-from pydantic import BaseModel
+from enum import Enum
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 from datetime import datetime, timedelta
-from db.database import get_db, init_db
+from db.database import get_db
 
 router = APIRouter()
-init_db()
+
+
+class Direction(str, Enum):
+    INCOME = "+"
+    EXPENSE = "-"
+
+
+class Account(str, Enum):
+    CASH = "cash"
+    REVOLUT = "revolut"
+
 
 class Transaction(BaseModel):
-    amount: float
-    direction: str
-    category: Optional[str] = None
-    note: Optional[str] = None
-    account: Optional[str] = "cash"
+    amount: float = Field(..., gt=0, le=1_000_000)
+    direction: Direction
+    category: Optional[str] = Field(None, max_length=100)
+    note: Optional[str] = Field(None, max_length=500)
+    account: Optional[Account] = Account.CASH
 
 @router.post("/transactions")
 def add_transaction(t: Transaction):
     conn = get_db()
     now = datetime.now().isoformat()
+    account_val = (t.account or Account.CASH).value
     conn.execute(
         "INSERT INTO transactions (created_at, amount, direction, category, note, account) VALUES (?,?,?,?,?,?)",
-        (now, t.amount, t.direction, t.category, t.note, t.account or "cash")
+        (now, t.amount, t.direction.value, t.category, t.note, account_val)
     )
     conn.commit()
     saldo_cash = conn.execute(

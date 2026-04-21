@@ -2,12 +2,16 @@ import logging
 import os
 import sqlite3
 import time
+from contextlib import asynccontextmanager
 
-from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
-load_dotenv(dotenv_path="/home/matteo/Jarvis/.env")
+from config import API_KEY, CORS_ORIGINS, DB_PATH, STORAGE_ROOT
+from db.schema import init_schema
+from security import api_key_middleware, limiter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,15 +26,31 @@ from routers.storage_router import router as storage_router
 from routers.command_router import router as command_router
 from routers.fitness_router import router as fitness_router
 
-app = FastAPI(title="Jarvis API", version="2.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_schema()
+    auth_state = "enabled" if API_KEY else "disabled (set JARVIS_API_KEY to enable)"
+    logger.info("Jarvis API ready (db=%s, auth=%s)", DB_PATH, auth_state)
+    yield
+
+
+app = FastAPI(title="Jarvis API", version="2.1", lifespan=lifespan)
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Auth middleware — aggiunto PRIMA del logger così le richieste 401 vengono loggate con status 401
+app.middleware("http")(api_key_middleware)
+
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -49,21 +69,21 @@ app.include_router(fitness_router)
 
 @app.get("/")
 def root():
-    return {"status": "ok", "version": "2.0"}
+    return {"status": "ok", "version": "2.1"}
 
 @app.get("/health")
 def health():
     checks: dict = {}
 
     try:
-        conn = sqlite3.connect("/home/matteo/Jarvis/data/jarvis.db")
+        conn = sqlite3.connect(DB_PATH)
         conn.execute("SELECT 1")
         conn.close()
         checks["db"] = "ok"
     except Exception as e:
         checks["db"] = f"error: {e}"
 
-    checks["storage"] = "ok" if os.path.isdir("/home/matteo/Jarvis/storage") else "missing"
+    checks["storage"] = "ok" if os.path.isdir(STORAGE_ROOT) else "missing"
 
     ok = all(v == "ok" for v in checks.values())
     return {"status": "ok" if ok else "degraded", "checks": checks}

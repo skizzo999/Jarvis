@@ -1,5 +1,7 @@
 # Python
 api/venv/
+api/.venv/
+.venv/
 api/__pycache__/
 api/routers/__pycache__/
 api/db/__pycache__/
@@ -30,3 +32,12 @@ storage/
 
 # Whisper model cache
 .cache/
+
+# Binaries/installers
+*.deb
+
+# Radicale runtime data (dati calendario personali)
+radicale/data/
+
+# Jarvis inbox content (improvements log etc.)
+storage/inbox/

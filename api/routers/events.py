@@ -1,34 +1,30 @@
 import logging
-import os
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 import sqlite3, requests, re
 from requests.auth import HTTPBasicAuth
 
+from config import DB_PATH, RADICALE_PASS, RADICALE_URL, RADICALE_USER
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/events", tags=["events"])
 
-RADICALE_URL  = "http://localhost:5232/matteo/calendar/"
-RADICALE_AUTH = HTTPBasicAuth(
-    os.getenv("RADICALE_USER", "matteo"),
-    os.getenv("RADICALE_PASS", "Mlizzo06"),
-)
+RADICALE_AUTH = HTTPBasicAuth(RADICALE_USER, RADICALE_PASS) if RADICALE_PASS else None
 
-DB_PATH = "/home/matteo/Jarvis/data/jarvis.db"
 
 def get_db():
     return sqlite3.connect(DB_PATH)
 
 class EventIn(BaseModel):
-    title: str
+    title: str = Field(..., min_length=1, max_length=200)
     start: datetime
     end: datetime | None = None
-    description: str | None = None
+    description: str | None = Field(None, max_length=1000)
 
 class ReminderIn(BaseModel):
-    title: str
+    title: str = Field(..., min_length=1, max_length=200)
     remind_at: datetime
 
 def parse_ical_value(ical_text: str, key: str) -> str:
@@ -139,8 +135,8 @@ def list_events():
 @router.delete("/{uid}")
 def delete_event(uid: str):
     """Delete an event from Radicale by UID."""
-    # Sanitize uid - no path traversal
-    if "/" in uid or ".." in uid:
+    # Sanitize uid - no path traversal, only safe iCal UID chars
+    if not re.match(r"^[\w\-.@]+$", uid) or len(uid) > 200:
         raise HTTPException(status_code=400, detail="Invalid UID")
 
     url = RADICALE_URL + uid + ".ics"
@@ -189,14 +185,6 @@ END:VCALENDAR"""
 def create_reminder(reminder: ReminderIn):
     con = get_db()
     cur = con.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS reminders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT,
-            remind_at TEXT,
-            sent INTEGER DEFAULT 0
-        )
-    """)
     cur.execute("INSERT INTO reminders (title, remind_at) VALUES (?, ?)",
                 (reminder.title, reminder.remind_at.isoformat()))
     con.commit()
@@ -207,14 +195,6 @@ def create_reminder(reminder: ReminderIn):
 def get_pending_reminders():
     con = get_db()
     cur = con.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS reminders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT,
-            remind_at TEXT,
-            sent INTEGER DEFAULT 0
-        )
-    """)
     now = datetime.now().isoformat()
     cur.execute("SELECT id, title, remind_at FROM reminders WHERE sent=0 AND remind_at <= ?", (now,))
     rows = cur.fetchall()

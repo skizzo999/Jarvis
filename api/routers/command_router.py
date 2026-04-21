@@ -1,74 +1,62 @@
 import logging
 
-from fastapi import APIRouter, HTTPException, UploadFile, File
-from pydantic import BaseModel, field_validator
+from fastapi import APIRouter, HTTPException, UploadFile, File, Request
+from pydantic import BaseModel, Field, field_validator
 from datetime import datetime, timedelta
-import sqlite3, os, json, re, requests, anthropic
+import sqlite3, os, json, re, requests, anthropic, time
 from requests.auth import HTTPBasicAuth
-from dotenv import load_dotenv
 
-load_dotenv(dotenv_path="/home/matteo/Jarvis/api/.env")
+from config import (
+    ANTHROPIC_API_KEY,
+    CLAUDE_MODEL,
+    DB_PATH,
+    FITNESS_TARGET,
+    RADICALE_PASS,
+    RADICALE_URL,
+    RADICALE_USER,
+    TELEGRAM_BOT_TOKEN,
+    WORKOUT_ROTATION_START,
+)
+from security import limiter
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["command"])
 
-DB_PATH        = "/home/matteo/Jarvis/data/jarvis.db"
-RADICALE_URL   = "http://localhost:5232/matteo/calendar/"
-RADICALE_AUTH  = HTTPBasicAuth(
-    os.getenv("RADICALE_USER", "matteo"),
-    os.getenv("RADICALE_PASS", "Mlizzo06"),
-)
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-ANTHROPIC_KEY  = os.getenv("ANTHROPIC_API_KEY", "")
-MODEL          = "claude-haiku-4-5-20251001"
+RADICALE_AUTH = HTTPBasicAuth(RADICALE_USER, RADICALE_PASS) if RADICALE_PASS else None
+TELEGRAM_TOKEN = TELEGRAM_BOT_TOKEN
+ANTHROPIC_KEY = ANTHROPIC_API_KEY
+MODEL = CLAUDE_MODEL
 
 # ── DB ────────────────────────────────────────────────────────────────────────
 
 def get_db():
     return sqlite3.connect(DB_PATH)
 
-def ensure_tables(cur):
-    cur.execute("""CREATE TABLE IF NOT EXISTS conversation_history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        role TEXT NOT NULL, content TEXT NOT NULL,
-        created_at TEXT DEFAULT (datetime('now')))""")
-    cur.execute("""CREATE TABLE IF NOT EXISTS workout_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        exercise TEXT NOT NULL, weight_kg REAL NOT NULL,
-        reps INTEGER, sets INTEGER, notes TEXT,
-        logged_at TEXT DEFAULT (datetime('now')))""")
-    cur.execute("""CREATE TABLE IF NOT EXISTS body_weight (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        weight_kg REAL NOT NULL,
-        logged_at TEXT DEFAULT (datetime('now')))""")
-    cur.execute("""CREATE TABLE IF NOT EXISTS reminders (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT, remind_at TEXT, sent INTEGER DEFAULT 0)""")
-    cur.execute("""CREATE TABLE IF NOT EXISTS jarvis_config (
-        key TEXT PRIMARY KEY, value TEXT)""")
-    cur.execute("""CREATE TABLE IF NOT EXISTS foods (
-        name TEXT PRIMARY KEY, kcal_100g REAL, protein_100g REAL,
-        carbs_100g REAL, fat_100g REAL)""")
-    cur.execute("""CREATE TABLE IF NOT EXISTS meals (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, logged_at TEXT,
-        description TEXT, kcal REAL, protein REAL, carbs REAL, fat REAL)""")
-    cur.execute("""CREATE TABLE IF NOT EXISTS transactions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT,
-        amount REAL, direction TEXT, category TEXT, note TEXT, account TEXT)""")
-
 # ── ROUTING ───────────────────────────────────────────────────────────────────
 
 HAS_NUMBER  = re.compile(r'\d')
 FINANCE_KW  = re.compile(r'sald|spes|pagat|guadagnat|entrat|uscit|transazion|soldi|budget|costo|euro|€|incassat', re.I)
 CALENDAR_KW = re.compile(r'calendar|event|agenda|appuntament|settiman|domani|domattina|quando|programm|impegn', re.I)
-FITNESS_KW  = re.compile(r'palest|allenament|workout|fitness|scheda|muscol|progress|panca|squat|stacco|curl|press|dips|affondi|eserciz', re.I)
+FITNESS_KW  = re.compile(r'palest|allenament|workout|fitness|scheda|muscol|progress|panca|squat|stacco|curl|press|dips|affondi|eserciz|peso|kg', re.I)
 DIET_KW       = re.compile(r'mangi|prand|cen|colazion|spuntin|calori|macro|protein|carbo|grassi|kcal|pasto|cibo|mangiato', re.I)
 FINANCE_EXACT = re.compile(r'speso|pagato|incassat|guadagnat|€|euro|ricaric|prelevat|carta|revolut|saldo', re.I)
+QUESTION_HINT = re.compile(r'\?|\b(che|cosa|quanto|quale|quando|dove|come|perché|quanti)\b', re.I)
+
 
 def classify(text: str) -> str:
+    """Routing testuale: decide quale prompt + context passare a Claude.
+
+    Ordine:
+    1. Se c'è una keyword dieta e NON c'è una keyword finanza esatta → diet.
+       (copre "mangiato X" con o senza numero)
+    2. Se c'è un numero E NON è una domanda → task (log azione).
+       (copre "panca 60kg 3x10" ma lascia "ho speso 50 oggi?" alla finance)
+    3. Keyword topic-specific → finance / calendar / fitness.
+    4. Fallback → general.
+    """
     if DIET_KW.search(text) and not FINANCE_EXACT.search(text):
         return "diet"
-    if HAS_NUMBER.search(text):
+    if HAS_NUMBER.search(text) and not QUESTION_HINT.search(text):
         return "task"
     if FINANCE_KW.search(text):
         return "finance"
@@ -81,7 +69,7 @@ def classify(text: str) -> str:
 # ── CONTEXT LOADERS ───────────────────────────────────────────────────────────
 
 def get_today_workout():
-    BASE_DATE = datetime(2026, 4, 7)
+    BASE_DATE = datetime.fromisoformat(WORKOUT_ROTATION_START)
     ROTATION  = ["A", "C", "B", "riposo"]
     SCHEDA    = {"A": "Petto/Tricipiti/Spalle", "B": "Schiena/Bicipiti", "C": "Gambe/Glutei", "riposo": "Riposo"}
     delta = (datetime.now() - BASE_DATE).days
@@ -109,7 +97,26 @@ def ctx_finance(days=7) -> str:
     finally:
         con.close()
 
+# Cache in-memory per i context builder che toccano risorse esterne lente
+# (Radicale su HTTP). TTL corto così i dati restano freschi.
+_CTX_CACHE: dict[str, tuple[float, str]] = {}
+
+
+def _cached(key: str, ttl: float, builder):
+    now = time.monotonic()
+    hit = _CTX_CACHE.get(key)
+    if hit and (now - hit[0]) < ttl:
+        return hit[1]
+    value = builder()
+    _CTX_CACHE[key] = (now, value)
+    return value
+
+
 def ctx_calendar(days=7) -> str:
+    return _cached(f"calendar:{days}", ttl=60, builder=lambda: _ctx_calendar_uncached(days))
+
+
+def _ctx_calendar_uncached(days=7) -> str:
     try:
         body = """<?xml version="1.0" encoding="utf-8"?>
 <C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
@@ -145,7 +152,7 @@ def ctx_calendar(days=7) -> str:
         # Aggiungi promemoria dal DB SQLite
         try:
             import sqlite3 as _sq
-            _conn = _sq.connect("/home/matteo/Jarvis/data/jarvis.db")
+            _conn = _sq.connect(DB_PATH)
             _cur = _conn.cursor()
             _cutoff_iso = cutoff.strftime("%Y-%m-%dT23:59:59")
             _today_iso = today.isoformat()
@@ -193,7 +200,7 @@ def ctx_diet() -> str:
         con.close()
 
 def ctx_fitness() -> str:
-    con = get_db(); cur = con.cursor(); ensure_tables(cur)
+    con = get_db(); cur = con.cursor()
     try:
         cur.execute("""SELECT exercise, weight_kg, reps, sets, logged_at
             FROM workout_logs WHERE id IN (SELECT MAX(id) FROM workout_logs GROUP BY exercise)
@@ -231,7 +238,7 @@ def build_rich_context() -> str:
     fin = ctx_finance(7)
     cal = ctx_calendar(3)
     fit = ctx_fitness()
-    con = get_db(); cur = con.cursor(); ensure_tables(cur)
+    con = get_db(); cur = con.cursor()
     try:
         now = datetime.now().isoformat()
         cur.execute("SELECT title, remind_at FROM reminders WHERE sent=0 AND remind_at > ? ORDER BY remind_at LIMIT 3", (now,))
@@ -379,7 +386,7 @@ def execute_delete(params: dict) -> str:
 
 def execute_action(action: dict) -> str:
     t = action.get("type"); params = action.get("params", {})
-    con = get_db(); cur = con.cursor(); ensure_tables(cur)
+    con = get_db(); cur = con.cursor()
     try:
         if t == "add_transaction":
             cur.execute("INSERT INTO transactions (created_at,amount,direction,category,note,account) VALUES (?,?,?,?,?,?)",
@@ -442,23 +449,62 @@ def execute_action(action: dict) -> str:
     finally:
         con.close()
 
-# ── HISTORY (solo per query) ──────────────────────────────────────────────────
+# ── HISTORY (per-chat) ────────────────────────────────────────────────────────
 
-def get_history(limit=6):
-    con = get_db(); cur = con.cursor(); ensure_tables(cur)
-    cur.execute("SELECT role,content FROM conversation_history ORDER BY id DESC LIMIT ?", (limit,))
+def get_history(limit: int = 6, chat_id: str | None = None):
+    """Ritorna gli ultimi N messaggi. Se `chat_id` è passato, filtra per quella
+    sessione; altrimenti usa lo storico globale (retrocompat)."""
+    con = get_db(); cur = con.cursor()
+    if chat_id:
+        cur.execute(
+            "SELECT role, content FROM conversation_history "
+            "WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
+            (chat_id, limit),
+        )
+    else:
+        cur.execute(
+            "SELECT role, content FROM conversation_history "
+            "WHERE chat_id IS NULL ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
     rows = cur.fetchall(); con.close()
     return [{"role": r[0], "content": r[1]} for r in reversed(rows)]
 
-def save_messages(user_text: str, assistant_text: str):
-    con = get_db(); cur = con.cursor(); ensure_tables(cur)
-    cur.execute("INSERT INTO conversation_history (role,content) VALUES (?,?)", ("user", user_text))
-    cur.execute("INSERT INTO conversation_history (role,content) VALUES (?,?)", ("assistant", assistant_text))
-    cur.execute("DELETE FROM conversation_history WHERE id NOT IN (SELECT id FROM conversation_history ORDER BY id DESC LIMIT 30)")
+
+def save_messages(user_text: str, assistant_text: str, chat_id: str | None = None, category: str | None = None):
+    """Salva la coppia user/assistant, annota `chat_id` e `category` per
+    mantenere la conversazione per-sessione e per-intento."""
+    con = get_db(); cur = con.cursor()
+    cur.execute(
+        "INSERT INTO conversation_history (role, content, chat_id, category) VALUES (?,?,?,?)",
+        ("user", user_text, chat_id, category),
+    )
+    cur.execute(
+        "INSERT INTO conversation_history (role, content, chat_id, category) VALUES (?,?,?,?)",
+        ("assistant", assistant_text, chat_id, category),
+    )
+    # Finestra scorrevole per chat: massimo 40 messaggi per sessione,
+    # così la storia resta utile ma il context non esplode.
+    if chat_id:
+        cur.execute(
+            "DELETE FROM conversation_history "
+            "WHERE chat_id = ? AND id NOT IN ("
+            "  SELECT id FROM conversation_history WHERE chat_id = ? "
+            "  ORDER BY id DESC LIMIT 40"
+            ")",
+            (chat_id, chat_id),
+        )
+    else:
+        cur.execute(
+            "DELETE FROM conversation_history WHERE chat_id IS NULL AND id NOT IN ("
+            "  SELECT id FROM conversation_history WHERE chat_id IS NULL "
+            "  ORDER BY id DESC LIMIT 30"
+            ")"
+        )
     con.commit(); con.close()
 
 def save_chat_id(chat_id: str):
-    con = get_db(); cur = con.cursor(); ensure_tables(cur)
+    con = get_db(); cur = con.cursor()
     cur.execute("INSERT OR REPLACE INTO jarvis_config (key,value) VALUES (?,?)", ("last_chat_id", chat_id))
     con.commit(); con.close()
 
@@ -479,7 +525,8 @@ class CommandIn(BaseModel):
         return v
 
 @router.post("/command")
-async def command(body: CommandIn):
+@limiter.limit("60/minute")
+async def command(request: Request, body: CommandIn):
     if not ANTHROPIC_KEY:
         raise HTTPException(500, "ANTHROPIC_API_KEY non configurata")
     text = body.text
@@ -488,12 +535,18 @@ async def command(body: CommandIn):
         save_chat_id(body.chat_id)
 
     category = classify(text)
-    logger.info("command received — category=%s text=%.80s", category, text)
+    chat_id  = body.chat_id
+    logger.info("command received — category=%s chat=%s text=%.80s", category, chat_id or "-", text)
     client   = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+
+    # Storia conversazionale: sempre iniettata (anche per task) così riferimenti
+    # del tipo "aggiungi quella spesa di prima" funzionano. Più corta per task
+    # (risposte di conferma brevi non hanno bisogno di molto contesto).
+    history_limit = 4 if category == "task" else 6
+    history = get_history(history_limit, chat_id=chat_id)
 
     if category == "task":
         system   = TASK_PROMPT.format(now=datetime.now().strftime("%d/%m/%Y %H:%M"))
-        messages = [{"role": "user", "content": text}]
         max_tok  = 150
     else:
         if category == "finance":
@@ -513,8 +566,9 @@ async def command(body: CommandIn):
             system_base = QUERY_PROMPT
 
         system   = system_base.format(now=datetime.now().strftime("%d/%m/%Y %H:%M")) + "\n\n" + context
-        messages = get_history(6) + [{"role": "user", "content": text}]
         max_tok  = 400
+
+    messages = history + [{"role": "user", "content": text}]
 
     response = client.messages.create(
         model=MODEL,
@@ -526,8 +580,9 @@ async def command(body: CommandIn):
     raw_reply            = response.content[0].text
     clean_reply, actions = parse_actions(raw_reply)
 
-    if category != "task":
-        save_messages(text, clean_reply)
+    # Persiste la coppia user/assistant per tutte le categorie (incluso task):
+    # serve per riferimenti conversazionali e per l'audit trail per-chat.
+    save_messages(text, clean_reply, chat_id=chat_id, category=category)
 
     results = [{"type": a.get("type"), "result": execute_action(a)} for a in actions]
     if actions:
@@ -537,7 +592,8 @@ async def command(body: CommandIn):
 # ── ENDPOINT AUDIO ────────────────────────────────────────────────────────────
 
 @router.post("/command/audio")
-async def command_audio(file: UploadFile = File(...), chat_id: str | None = None):
+@limiter.limit("30/minute")
+async def command_audio(request: Request, file: UploadFile = File(...), chat_id: str | None = None):
     try:
         from faster_whisper import WhisperModel
     except ImportError:
@@ -554,14 +610,15 @@ async def command_audio(file: UploadFile = File(...), chat_id: str | None = None
         os.unlink(tmp_path)
     if not text:
         return {"reply": "Non ho capito l'audio, puoi ripetere?", "transcription": "", "actions": []}
-    result = await command(CommandIn(text=text, chat_id=chat_id))
+    result = await command(request, CommandIn(text=text, chat_id=chat_id))
     result["transcription"] = text
     return result
 
 # ── ENDPOINT REPORT (per lo scheduler) ───────────────────────────────────────
 
 @router.post("/command/report")
-async def report(body: CommandIn):
+@limiter.limit("20/minute")
+async def report(request: Request, body: CommandIn):
     """Usato dallo scheduler per i briefing mattutini/serali."""
     if not ANTHROPIC_KEY:
         raise HTTPException(500, "ANTHROPIC_API_KEY non configurata")

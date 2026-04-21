@@ -1,0 +1,33 @@
+services:
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: jarvis-n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_HOST=n8n.matteolizzo.it
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=https
+      - WEBHOOK_URL=https://n8n.matteolizzo.it/
+      - GENERIC_TIMEZONE=Europe/Rome
+      - TZ=Europe/Rome
+      - N8N_SECURE_COOKIE=false
+      - N8N_ENCRYPTION_KEY=xHTB5mLpzLRr4H6lSKOq5fl6nx51djX5
+      - N8N_SKIP_WEBHOOK_DEREGISTRATION_SHUTDOWN=true
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./JarvisWorkFlow:/workflows/JarvisWorkFlow:ro
+
+  radicale:
+    image: tomsquest/docker-radicale:latest
+    container_name: jarvis-radicale
+    restart: unless-stopped
+    ports:
+      - "5232:5232"
+    volumes:
+      - ./radicale/data:/data/collections
+      - ./radicale/config:/config:ro
+
+volumes:
+  n8n_data:
