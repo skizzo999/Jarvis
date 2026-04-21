@@ -1,20 +1,26 @@
+import logging
+
 from fastapi import APIRouter, HTTPException, UploadFile, File
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from datetime import datetime, timedelta
 import sqlite3, os, json, re, requests, anthropic
 from requests.auth import HTTPBasicAuth
 from dotenv import load_dotenv
 
-load_dotenv(dotenv_path="/home/jarvis/api/.env")
+load_dotenv(dotenv_path="/home/matteo/Jarvis/api/.env")
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["command"])
 
-DB_PATH        = "/home/jarvis/data/jarvis.db"
+DB_PATH        = "/home/matteo/Jarvis/data/jarvis.db"
 RADICALE_URL   = "http://localhost:5232/matteo/calendar/"
-RADICALE_AUTH  = HTTPBasicAuth("matteo", "Mlizzo06")
+RADICALE_AUTH  = HTTPBasicAuth(
+    os.getenv("RADICALE_USER", "matteo"),
+    os.getenv("RADICALE_PASS", "Mlizzo06"),
+)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 ANTHROPIC_KEY  = os.getenv("ANTHROPIC_API_KEY", "")
-MODEL          = "claude-haiku-4-5-20251001"  # ← AGGIUNTO: modello definito
+MODEL          = "claude-haiku-4-5-20251001"
 
 # ── DB ────────────────────────────────────────────────────────────────────────
 
@@ -133,12 +139,13 @@ def ctx_calendar(days=7) -> str:
                 dt = datetime.strptime(dtstart[:15], "%Y%m%dT%H%M%S") if "T" in dtstart else datetime.strptime(dtstart[:8], "%Y%m%d")
                 if today <= dt.date() <= cutoff:
                     events.append((dt, summary))
-            except: pass
+            except (ValueError, TypeError):
+                pass
         events.sort(key=lambda e: e[0])
         # Aggiungi promemoria dal DB SQLite
         try:
             import sqlite3 as _sq
-            _conn = _sq.connect("/home/jarvis/data/jarvis.db")
+            _conn = _sq.connect("/home/matteo/Jarvis/data/jarvis.db")
             _cur = _conn.cursor()
             _cutoff_iso = cutoff.strftime("%Y-%m-%dT23:59:59")
             _today_iso = today.isoformat()
@@ -150,14 +157,17 @@ def ctx_calendar(days=7) -> str:
                 try:
                     _dt = datetime.fromisoformat(_row[1])
                     events.append((_dt, f"🔔 {_row[0]}"))
-                except: pass
+                except (ValueError, TypeError):
+                    pass
             _conn.close()
             events.sort(key=lambda e: e[0])
-        except: pass
+        except Exception as _e:
+            logger.warning("Errore lettura promemoria da DB in ctx_calendar: %s", _e)
         if not events:
             return f"Nessun evento nei prossimi {days} giorni."
         return "\n".join(f"{e[0].strftime('%d/%m %H:%M')} — {e[1]}" for e in events[:15])
-    except:
+    except Exception as e:
+        logger.warning("ctx_calendar non disponibile: %s", e)
         return "Calendario non disponibile."
 
 def ctx_diet() -> str:
@@ -209,7 +219,8 @@ def ctx_minimal() -> str:
     try:
         cur.execute("SELECT COALESCE(SUM(CASE WHEN direction='+' THEN amount ELSE -amount END),0) FROM transactions")
         saldo = cur.fetchone()[0]
-    except:
+    except Exception as e:
+        logger.warning("ctx_minimal: errore lettura saldo: %s", e)
         saldo = 0
     finally:
         con.close()
@@ -289,8 +300,10 @@ def parse_actions(reply: str):
     clean   = re.sub(r"<action>.*?</action>", "", reply, flags=re.DOTALL).strip()
     actions = []
     for m in matches:
-        try: actions.append(json.loads(m.strip()))
-        except: pass
+        try:
+            actions.append(json.loads(m.strip()))
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning("Impossibile parsare action JSON: %s — payload: %.80s", e, m)
     return clean, actions
 
 def execute_delete(params: dict) -> str:
@@ -455,18 +468,27 @@ class CommandIn(BaseModel):
     text: str
     chat_id: str | None = None
 
+    @field_validator("text")
+    @classmethod
+    def validate_text(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Testo vuoto")
+        if len(v) > 500:
+            raise ValueError("Testo troppo lungo (max 500 caratteri)")
+        return v
+
 @router.post("/command")
 async def command(body: CommandIn):
     if not ANTHROPIC_KEY:
         raise HTTPException(500, "ANTHROPIC_API_KEY non configurata")
-    text = body.text.strip()
-    if not text:
-        raise HTTPException(400, "Testo vuoto")
+    text = body.text
 
     if body.chat_id:
         save_chat_id(body.chat_id)
 
     category = classify(text)
+    logger.info("command received — category=%s text=%.80s", category, text)
     client   = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 
     if category == "task":
@@ -508,6 +530,8 @@ async def command(body: CommandIn):
         save_messages(text, clean_reply)
 
     results = [{"type": a.get("type"), "result": execute_action(a)} for a in actions]
+    if actions:
+        logger.info("actions executed: %s", [r["type"] for r in results])
     return {"reply": clean_reply, "actions": results}
 
 # ── ENDPOINT AUDIO ────────────────────────────────────────────────────────────

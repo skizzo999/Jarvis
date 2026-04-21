@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 import os
 
 # Carica variabili d'ambiente da .env
-load_dotenv(dotenv_path="/home/jarvis/api/.env")
+load_dotenv(dotenv_path="/home/matteo/Jarvis/api/.env")
 
 from routers import transactions, events
 from routers.server_router  import router as server_router

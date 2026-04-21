@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import RingProgress from "../../components/ui/RingProgress";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 
-const API_URL = "https://api.matteolizzo.it";
+const API_URL = "/api";
 
 const SCHEDA = {
   A: {
@@ -131,10 +131,14 @@ function MacroBar({ label, current, target, color }) {
   );
 }
 
+const ALL_EXERCISES = Object.values(SCHEDA).flatMap(d => d.exercises);
+
 export default function FitnessPage() {
-  const [lastWeights, setLastWeights]     = useState({});
-  const [weightHistory, setWeightHistory] = useState([]);
-  const [macros, setMacros]               = useState({ kcal:0, protein:0, carbs:0, fat:0 });
+  const [lastWeights, setLastWeights]       = useState({});
+  const [weightHistory, setWeightHistory]   = useState([]);
+  const [macros, setMacros]                 = useState({ kcal:0, protein:0, carbs:0, fat:0 });
+  const [selectedEx, setSelectedEx]         = useState(ALL_EXERCISES[0].dbKey);
+  const [exHistory, setExHistory]           = useState([]);
   const todayWorkout = getTodayWorkout();
   const targets = { kcal:2330, protein:160, carbs:265, fat:70 };
 
@@ -157,6 +161,16 @@ export default function FitnessPage() {
       .then(data => setMacros(data.totals || { kcal:0, protein:0, carbs:0, fat:0 }))
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    fetch(`${API_URL}/fitness/history/${encodeURIComponent(selectedEx)}?limit=20`)
+      .then(r => r.json())
+      .then(rows => setExHistory(rows.map(r => ({
+        date: r.logged_at?.slice(5, 10),
+        kg:   r.weight_kg,
+      }))))
+      .catch(() => setExHistory([]));
+  }, [selectedEx]);
 
   const rings = [
     { pct: Math.round((macros.kcal / targets.kcal) * 100),     color:"#34d399", label:"Kcal" },
@@ -195,6 +209,43 @@ export default function FitnessPage() {
         {todayWorkout === "riposo" && (
           <div className="glass" style={{ padding:"12px 16px", fontSize:12, color:"var(--muted)", fontFamily:"var(--font)", textAlign:"center" }}>
             💤 Oggi è previsto riposo — buon recupero!
+          </div>
+        )}
+      </div>
+
+      {/* Grafico progresso esercizio */}
+      <div className="glass" style={{ padding:16 }}>
+        <div style={{ fontSize:10, fontWeight:700, letterSpacing:"0.8px", textTransform:"uppercase", color:"var(--muted)", marginBottom:10, fontFamily:"var(--font)" }}>
+          Progresso esercizio
+        </div>
+        <select
+          value={selectedEx}
+          onChange={e => setSelectedEx(e.target.value)}
+          style={{
+            width:"100%", background:"rgba(255,255,255,0.05)", border:"1px solid rgba(255,255,255,0.1)",
+            borderRadius:10, padding:"7px 10px", color:"var(--text)",
+            fontSize:12, fontFamily:"var(--font)", outline:"none", marginBottom:12,
+            appearance:"none",
+          }}
+        >
+          {ALL_EXERCISES.map(ex => (
+            <option key={ex.dbKey} value={ex.dbKey} style={{ background:"#0d0d1a" }}>{ex.nome}</option>
+          ))}
+        </select>
+        {exHistory.length > 1 ? (
+          <ResponsiveContainer width="100%" height={110}>
+            <LineChart data={exHistory}>
+              <XAxis dataKey="date" tick={{ fill:"rgba(255,255,255,0.3)", fontSize:10 }} axisLine={false} tickLine={false}/>
+              <YAxis domain={["auto","auto"]} tick={{ fill:"rgba(255,255,255,0.3)", fontSize:10 }} axisLine={false} tickLine={false} width={32}/>
+              <Tooltip contentStyle={{ background:"rgba(10,10,30,0.9)", border:"1px solid rgba(255,255,255,0.1)", borderRadius:10, fontSize:12 }}
+                labelStyle={{ color:"rgba(255,255,255,0.5)" }} itemStyle={{ color:"#818cf8" }}
+                formatter={v => [`${v} kg`]}/>
+              <Line type="monotone" dataKey="kg" stroke="#818cf8" strokeWidth={2} dot={{ fill:"#818cf8", r:3 }} activeDot={{ r:5 }}/>
+            </LineChart>
+          </ResponsiveContainer>
+        ) : (
+          <div style={{ textAlign:"center", fontSize:12, color:"var(--muted)", fontFamily:"var(--font)", padding:"16px 0" }}>
+            Nessun dato per questo esercizio
           </div>
         )}
       </div>

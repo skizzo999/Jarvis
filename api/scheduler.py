@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-load_dotenv(dotenv_path="/home/jarvis/api/.env")
+load_dotenv(dotenv_path="/home/matteo/Jarvis/.env")
 
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "8330494963")
@@ -19,7 +19,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler("/home/jarvis/logs/scheduler.log"),
+        logging.FileHandler("/home/matteo/Jarvis/logs/scheduler.log"),
         logging.StreamHandler(),
     ]
 )
@@ -101,7 +101,7 @@ def check_reminders():
 
 if __name__ == "__main__":
     # Crea cartella logs se non esiste
-    os.makedirs("/home/jarvis/logs", exist_ok=True)
+    os.makedirs("/home/matteo/Jarvis/logs", exist_ok=True)
 
     scheduler = BlockingScheduler(timezone="Europe/Rome")
 

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 
-const API_URL = "https://api.matteolizzo.it";
+const API_URL = "/api";
 
 export default function CalendarPage() {
   const [events, setEvents]       = useState([]);

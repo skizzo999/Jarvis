@@ -1,4 +1,6 @@
-from fastapi import APIRouter, HTTPException
+import logging
+
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional
@@ -8,11 +10,13 @@ import sqlite3
 import shutil
 from datetime import datetime, timedelta
 
-load_dotenv(dotenv_path="/home/jarvis/api/.env")
+logger = logging.getLogger(__name__)
+
+load_dotenv(dotenv_path="/home/matteo/Jarvis/api/.env")
 
 router = APIRouter(prefix="/storage", tags=["storage"])
-STORAGE_ROOT = "/home/jarvis/storage"
-DB_PATH = "/home/jarvis/data/jarvis.db"
+STORAGE_ROOT = "/home/matteo/Jarvis/storage"
+DB_PATH = "/home/matteo/Jarvis/data/jarvis.db"
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 MODEL = "claude-haiku-4-5-20251001"
 
@@ -171,7 +175,8 @@ async def upload_from_telegram(data: UploadRequest):
     
     with open(local_path, "wb") as f:
         f.write(r.content)
-    
+    logger.info("file salvato in inbox: %s (%.1f KB)", data.file_name, len(r.content) / 1024)
+
     # 4. Registra come pending (per il timeout)
     conn = get_db()
     conn.execute("""
@@ -242,7 +247,8 @@ def classify_pending(req: ClassifyRequest):
     
     os.makedirs(dest_dir, exist_ok=True)
     shutil.move(source, dest)
-    
+    logger.info("file classificato: %s → %s", filename, target)
+
     # 🧹 Pulisci pending
     cur.execute("DELETE FROM pending_files WHERE chat_id = ?", (req.chat_id,))
     conn.commit()
@@ -283,9 +289,36 @@ def analyze_file(req: AnalyzeRequest):
             "content": f"File: {filename}\n\n---\n{text}\n---\n\nDomanda: {question}"
         }]
     )
+    answer = response.content[0].text
+    logger.info("file analizzato: %s (%d chars) domanda: %.60s", filename, len(text), question)
     return {
         "filename": filename,
         "question": question,
-        "answer": response.content[0].text,
+        "answer": answer,
         "chars_analyzed": len(text),
     }
+
+@router.post("/upload-web")
+async def upload_web(
+    file: UploadFile = File(...),
+    folder: str = Form("inbox"),
+):
+    """Upload diretto dal browser. Salva in STORAGE_ROOT/{folder}/."""
+    safe_base = os.path.realpath(STORAGE_ROOT)
+    dest_dir  = os.path.realpath(os.path.join(STORAGE_ROOT, folder))
+    if not dest_dir.startswith(safe_base + os.sep) and dest_dir != safe_base:
+        raise HTTPException(400, "Cartella non valida")
+
+    safe_name = os.path.basename(file.filename or "upload")
+    if not safe_name:
+        raise HTTPException(400, "Nome file non valido")
+
+    os.makedirs(dest_dir, exist_ok=True)
+    dest_path = os.path.join(dest_dir, safe_name)
+
+    content = await file.read()
+    with open(dest_path, "wb") as f:
+        f.write(content)
+
+    logger.info("upload web: %s → %s (%.1f KB)", safe_name, folder, len(content) / 1024)
+    return {"status": "ok", "filename": safe_name, "folder": folder, "size_kb": round(len(content)/1024, 1)}

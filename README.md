@@ -100,10 +100,11 @@ npm run dev
 Create a `.env` file in the root based on `.env.example`:
 
 ```env
-ANTHROPIC_API_KEY=
-TELEGRAM_BOT_TOKEN=
-DATABASE_URL=
-NOTION_TOKEN=
+ANTHROPIC_API_KEY=        # Anthropic API key
+TELEGRAM_BOT_TOKEN=       # Telegram bot token
+TELEGRAM_CHAT_ID=         # Your Telegram chat ID
+RADICALE_USER=matteo      # Radicale CalDAV username
+RADICALE_PASS=            # Radicale CalDAV password
 ```
 
 ⚠️ Never commit your `.env` file.
@@ -119,6 +120,28 @@ NOTION_TOKEN=
 - [x] Module 4 — Pro Dashboard
 - [x] Module 5 — Notifications & Scheduler
 - [x] Module 6 — Fitness Tracker
+
+-----
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | System health check (DB, storage) |
+| POST | `/command` | Natural language command → Claude → actions |
+| POST | `/command/audio` | Voice file → Whisper → /command |
+| POST | `/command/report` | Scheduled briefing/recap |
+| GET | `/transactions/report?period=today\|week\|month` | Finance report |
+| POST | `/transactions` | Add transaction |
+| GET | `/events/list` | Upcoming CalDAV events |
+| POST | `/events/` | Create calendar event |
+| GET | `/fitness/meals/today` | Today's meals + macro totals |
+| POST | `/fitness/meal` | Log meal |
+| POST | `/fitness/log` | Log workout |
+| GET | `/fitness/last` | Last weight per exercise |
+| GET | `/storage/files` | Storage file tree |
+| POST | `/storage/upload` | Upload file from Telegram |
+| POST | `/storage/analyze` | AI file analysis |
 
 -----
 

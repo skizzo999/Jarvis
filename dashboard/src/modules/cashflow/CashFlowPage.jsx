@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import axios from "axios";
 
-const API_URL = "https://api.matteolizzo.it";
+const API_URL = "/api";
 const fmt = v => Number(v||0).toLocaleString("it-IT",{minimumFractionDigits:2,maximumFractionDigits:2});
 const ACCOUNT_COLOR = { cash:"#34d399", revolut:"#818cf8" };
 const ACCOUNT_ICON  = { cash:"💵", revolut:"💳" };
+
+const EMPTY_FORM = { amount:"", direction:"-", category:"", account:"cash", note:"" };
 
 export default function CashFlowPage({ onDataReady }) {
   const [transactions, setTransactions] = useState([]);
@@ -12,6 +14,9 @@ export default function CashFlowPage({ onDataReady }) {
   const [period, setPeriod]   = useState("month");
   const [syncing, setSyncing] = useState(false);
   const [accountFilter, setAccountFilter] = useState("all");
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm]         = useState(EMPTY_FORM);
+  const [saving, setSaving]     = useState(false);
 
   const fetchData = useCallback(async () => {
     setSyncing(true);
@@ -37,6 +42,25 @@ export default function CashFlowPage({ onDataReady }) {
     accountFilter === "all" ? transactions : transactions.filter(t => t.account === accountFilter),
     [transactions, accountFilter]
   );
+
+  const submitForm = async () => {
+    const amount = parseFloat(form.amount);
+    if (!amount || amount <= 0) return;
+    setSaving(true);
+    try {
+      await axios.post(`${API_URL}/transactions`, {
+        amount,
+        direction: form.direction,
+        category:  form.category || "manuale",
+        account:   form.account,
+        note:      form.note,
+      });
+      setForm(EMPTY_FORM);
+      setShowForm(false);
+      await fetchData();
+    } catch(e) { console.error(e); }
+    finally { setSaving(false); }
+  };
 
   const periods = ["today","week","month"];
   const periodLabel = { today:"Oggi", week:"7gg", month:"Mese" };
@@ -91,6 +115,94 @@ export default function CashFlowPage({ onDataReady }) {
             </div>
           </div>
         ))}
+      </div>
+
+      {/* Aggiungi transazione */}
+      <div style={{ flexShrink:0 }}>
+        <button onClick={() => setShowForm(v => !v)} style={{
+          background:"transparent", border:"1px solid rgba(255,255,255,0.1)",
+          borderRadius:20, padding:"5px 14px", cursor:"pointer",
+          color:"var(--muted)", fontSize:11, fontFamily:"var(--font)", transition:"all 0.2s",
+          display:"flex", alignItems:"center", gap:5,
+        }}>
+          <span style={{ fontSize:14, lineHeight:1 }}>{showForm ? "−" : "+"}</span> Aggiungi
+        </button>
+
+        {showForm && (
+          <div style={{
+            marginTop:10, padding:"14px", background:"rgba(255,255,255,0.04)",
+            border:"1px solid rgba(255,255,255,0.08)", borderRadius:14,
+            display:"flex", flexDirection:"column", gap:10,
+          }}>
+            {/* Row 1: direzione + importo */}
+            <div style={{ display:"flex", gap:8 }}>
+              {["+","-"].map(d => (
+                <button key={d} onClick={() => setForm(f=>({...f,direction:d}))} style={{
+                  background: form.direction===d ? (d==="+" ? "rgba(52,211,153,0.15)" : "rgba(248,113,113,0.15)") : "rgba(255,255,255,0.04)",
+                  border: `1px solid ${form.direction===d ? (d==="+" ? "rgba(52,211,153,0.4)" : "rgba(248,113,113,0.4)") : "rgba(255,255,255,0.08)"}`,
+                  borderRadius:10, padding:"6px 16px", cursor:"pointer",
+                  color: form.direction===d ? (d==="+" ? "var(--green)" : "var(--red)") : "var(--muted)",
+                  fontSize:16, fontWeight:700, fontFamily:"var(--font)",
+                }}>{d}</button>
+              ))}
+              <input
+                type="number" min="0" step="0.01" placeholder="0.00"
+                value={form.amount}
+                onChange={e => setForm(f=>({...f,amount:e.target.value}))}
+                onKeyDown={e => e.key==="Enter" && submitForm()}
+                style={{
+                  flex:1, background:"rgba(255,255,255,0.04)", border:"1px solid rgba(255,255,255,0.08)",
+                  borderRadius:10, padding:"6px 10px", color:"var(--text)",
+                  fontSize:14, fontFamily:"var(--font)", outline:"none",
+                }}
+              />
+            </div>
+            {/* Row 2: categoria + account */}
+            <div style={{ display:"flex", gap:8 }}>
+              <input
+                placeholder="Categoria"
+                value={form.category}
+                onChange={e => setForm(f=>({...f,category:e.target.value}))}
+                style={{
+                  flex:1, background:"rgba(255,255,255,0.04)", border:"1px solid rgba(255,255,255,0.08)",
+                  borderRadius:10, padding:"6px 10px", color:"var(--text)",
+                  fontSize:12, fontFamily:"var(--font)", outline:"none",
+                }}
+              />
+              {["cash","revolut"].map(a => (
+                <button key={a} onClick={() => setForm(f=>({...f,account:a}))} style={{
+                  background: form.account===a ? `${ACCOUNT_COLOR[a]}18` : "rgba(255,255,255,0.04)",
+                  border: `1px solid ${form.account===a ? `${ACCOUNT_COLOR[a]}50` : "rgba(255,255,255,0.08)"}`,
+                  borderRadius:10, padding:"6px 12px", cursor:"pointer",
+                  color: form.account===a ? ACCOUNT_COLOR[a] : "var(--muted)",
+                  fontSize:12, fontFamily:"var(--font)",
+                }}>{ACCOUNT_ICON[a]} {a}</button>
+              ))}
+            </div>
+            {/* Row 3: nota + salva */}
+            <div style={{ display:"flex", gap:8 }}>
+              <input
+                placeholder="Nota (opzionale)"
+                value={form.note}
+                onChange={e => setForm(f=>({...f,note:e.target.value}))}
+                onKeyDown={e => e.key==="Enter" && submitForm()}
+                style={{
+                  flex:1, background:"rgba(255,255,255,0.04)", border:"1px solid rgba(255,255,255,0.08)",
+                  borderRadius:10, padding:"6px 10px", color:"var(--text)",
+                  fontSize:12, fontFamily:"var(--font)", outline:"none",
+                }}
+              />
+              <button onClick={submitForm} disabled={saving || !form.amount} style={{
+                background:"rgba(255,255,255,0.08)", border:"1px solid rgba(255,255,255,0.14)",
+                borderRadius:10, padding:"6px 16px", cursor:"pointer",
+                color:"var(--text)", fontSize:12, fontFamily:"var(--font)",
+                opacity: (saving || !form.amount) ? 0.4 : 1, transition:"all 0.2s",
+              }}>
+                {saving ? "…" : "Salva"}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Separatore */}

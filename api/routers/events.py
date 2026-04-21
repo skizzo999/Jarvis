@@ -1,15 +1,22 @@
+import logging
+import os
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from datetime import datetime
 import sqlite3, requests, re
 from requests.auth import HTTPBasicAuth
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/events", tags=["events"])
 
-RADICALE_URL = "http://localhost:5232/matteo/calendar/"
-RADICALE_AUTH = HTTPBasicAuth("matteo", "Mlizzo06")
+RADICALE_URL  = "http://localhost:5232/matteo/calendar/"
+RADICALE_AUTH = HTTPBasicAuth(
+    os.getenv("RADICALE_USER", "matteo"),
+    os.getenv("RADICALE_PASS", "Mlizzo06"),
+)
 
-DB_PATH = "/home/jarvis/data/jarvis.db"
+DB_PATH = "/home/matteo/Jarvis/data/jarvis.db"
 
 def get_db():
     return sqlite3.connect(DB_PATH)
@@ -121,8 +128,11 @@ def fetch_all_ics() -> list[dict]:
 def list_events():
     """Return all upcoming events from Radicale CalDAV."""
     try:
-        return fetch_all_ics()
+        events = fetch_all_ics()
+        logger.info("events/list → %d eventi", len(events))
+        return events
     except Exception as e:
+        logger.error("events/list fallito: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -137,10 +147,12 @@ def delete_event(uid: str):
     r = requests.delete(url, auth=RADICALE_AUTH)
 
     if r.status_code in [200, 204]:
+        logger.info("evento eliminato uid=%s", uid)
         return {"status": "ok", "uid": uid}
     elif r.status_code == 404:
         raise HTTPException(status_code=404, detail="Event not found")
     else:
+        logger.error("Radicale DELETE error uid=%s status=%d", uid, r.status_code)
         raise HTTPException(status_code=500, detail=f"Radicale error: {r.status_code}")
 
 
@@ -168,7 +180,9 @@ END:VCALENDAR"""
         headers={"Content-Type": "text/calendar"}
     )
     if r.status_code not in [201, 204]:
+        logger.error("Radicale PUT error uid=%s status=%d", uid, r.status_code)
         raise HTTPException(status_code=500, detail=f"Radicale error: {r.status_code}")
+    logger.info("evento creato uid=%s title=%s", uid, event.title)
     return {"status": "ok", "uid": uid, "title": event.title, "start": event.start}
 
 @router.post("/reminders")

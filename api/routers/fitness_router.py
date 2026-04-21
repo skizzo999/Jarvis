@@ -1,10 +1,13 @@
+import logging
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from datetime import datetime, date
 import sqlite3
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/fitness", tags=["fitness"])
-DB_PATH = "/home/jarvis/data/jarvis.db"
+DB_PATH = "/home/matteo/Jarvis/data/jarvis.db"
 
 def get_db():
     con = sqlite3.connect(DB_PATH)
@@ -39,15 +42,16 @@ class WorkoutLogIn(BaseModel):
     notes: str | None = None
 
 @router.post("/log")
-def log_workout(body: WorkoutLogIn):
+def log_workout(body: WorkoutLogIn) -> dict:
     con = get_db(); cur = con.cursor(); ensure_tables(cur)
     cur.execute("INSERT INTO workout_logs (exercise,weight_kg,reps,sets,notes,logged_at) VALUES (?,?,?,?,?,?)",
         (body.exercise.lower().strip(), body.weight_kg, body.reps, body.sets, body.notes, datetime.now().isoformat()))
     con.commit(); con.close()
+    logger.info("workout logged: %s %.1fkg", body.exercise, body.weight_kg)
     return {"status": "ok", "exercise": body.exercise, "weight_kg": body.weight_kg}
 
 @router.get("/last")
-def get_last_weights():
+def get_last_weights() -> list:
     con = get_db(); cur = con.cursor(); ensure_tables(cur)
     cur.execute("""SELECT exercise,weight_kg,reps,sets,notes,logged_at FROM workout_logs
         WHERE id IN (SELECT MAX(id) FROM workout_logs GROUP BY exercise) ORDER BY exercise""")
@@ -55,7 +59,7 @@ def get_last_weights():
     return [dict(r) for r in rows]
 
 @router.get("/history/{exercise}")
-def get_exercise_history(exercise: str, limit: int = 20):
+def get_exercise_history(exercise: str, limit: int = 20) -> list:
     con = get_db(); cur = con.cursor(); ensure_tables(cur)
     cur.execute("""SELECT weight_kg,reps,sets,notes,logged_at FROM workout_logs
         WHERE LOWER(exercise)=LOWER(?) ORDER BY logged_at DESC LIMIT ?""", (exercise, limit))
@@ -63,7 +67,7 @@ def get_exercise_history(exercise: str, limit: int = 20):
     return [dict(r) for r in reversed(rows)]
 
 @router.delete("/log/{log_id}")
-def delete_log(log_id: int):
+def delete_log(log_id: int) -> dict:
     con = get_db(); cur = con.cursor(); ensure_tables(cur)
     cur.execute("DELETE FROM workout_logs WHERE id=?", (log_id,))
     if cur.rowcount == 0: con.close(); raise HTTPException(404, "Log non trovato")
@@ -76,7 +80,7 @@ class BodyWeightIn(BaseModel):
     weight_kg: float
 
 @router.post("/weight")
-def log_body_weight(body: BodyWeightIn):
+def log_body_weight(body: BodyWeightIn) -> dict:
     con = get_db(); cur = con.cursor(); ensure_tables(cur)
     cur.execute("INSERT INTO body_weight (weight_kg,logged_at) VALUES (?,?)",
         (body.weight_kg, datetime.now().isoformat()))
@@ -84,7 +88,7 @@ def log_body_weight(body: BodyWeightIn):
     return {"status": "ok", "weight_kg": body.weight_kg}
 
 @router.get("/weight/history")
-def get_weight_history(limit: int = 30):
+def get_weight_history(limit: int = 30) -> list:
     con = get_db(); cur = con.cursor(); ensure_tables(cur)
     cur.execute("SELECT weight_kg, logged_at FROM body_weight ORDER BY logged_at DESC LIMIT ?", (limit,))
     rows = cur.fetchall(); con.close()
@@ -100,14 +104,14 @@ class FoodIn(BaseModel):
     fat_100g: float
 
 @router.get("/foods")
-def get_foods():
+def get_foods() -> list:
     con = get_db(); cur = con.cursor(); ensure_tables(cur)
     cur.execute("SELECT * FROM foods ORDER BY name")
     rows = cur.fetchall(); con.close()
     return [dict(r) for r in rows]
 
 @router.post("/foods")
-def add_food(body: FoodIn):
+def add_food(body: FoodIn) -> dict:
     con = get_db(); cur = con.cursor(); ensure_tables(cur)
     cur.execute("INSERT OR REPLACE INTO foods (name,kcal_100g,protein_100g,carbs_100g,fat_100g) VALUES (?,?,?,?,?)",
         (body.name.lower().strip(), body.kcal_100g, body.protein_100g, body.carbs_100g, body.fat_100g))
@@ -125,7 +129,7 @@ class MealIn(BaseModel):
     note: str | None = None
 
 @router.post("/meal")
-def log_meal(body: MealIn):
+def log_meal(body: MealIn) -> dict:
     con = get_db(); cur = con.cursor(); ensure_tables(cur)
     cur.execute("INSERT INTO meals (logged_at,description,kcal,protein,carbs,fat,note) VALUES (?,?,?,?,?,?,?)",
         (datetime.now().isoformat(), body.description, body.kcal, body.protein, body.carbs, body.fat, body.note))
@@ -133,7 +137,7 @@ def log_meal(body: MealIn):
     return {"status": "ok"}
 
 @router.get("/meals/today")
-def get_meals_today():
+def get_meals_today() -> dict:
     con = get_db(); cur = con.cursor(); ensure_tables(cur)
     today = date.today().isoformat()
     cur.execute("SELECT * FROM meals WHERE logged_at >= ? ORDER BY logged_at", (today,))
@@ -149,7 +153,7 @@ def get_meals_today():
     return {"meals": meals, "totals": totals}
 
 @router.delete("/meal/{meal_id}")
-def delete_meal(meal_id: int):
+def delete_meal(meal_id: int) -> dict:
     con = get_db(); cur = con.cursor(); ensure_tables(cur)
     cur.execute("DELETE FROM meals WHERE id=?", (meal_id,))
     if cur.rowcount == 0: con.close(); raise HTTPException(404, "Pasto non trovato")

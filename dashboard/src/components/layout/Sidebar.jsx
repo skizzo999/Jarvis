@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 
-const API_URL = "https://api.matteolizzo.it";
+const API_URL = "/api";
 
 const ROTATION = ["A","C","B","riposo"];
 const BASE_DATE = new Date("2026-04-07T00:00:00");
